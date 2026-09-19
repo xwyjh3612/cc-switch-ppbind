@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -57,6 +57,7 @@ function ForceModelDropdown({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [pending, setPending] = useState(false);
+  const inputAnchorRef = useRef<HTMLDivElement>(null);
   const allModels =
     value && !models.includes(value) ? [value, ...models] : models;
   const normalizedSearch = search.trim().toLowerCase();
@@ -126,12 +127,18 @@ function ForceModelDropdown({
       }}
     >
       <PopoverAnchor asChild>
-        <div className="relative w-[220px] shrink-0">
+        <div ref={inputAnchorRef} className="relative w-[220px] shrink-0">
           <Input
             value={search}
             onFocus={() => {
               setSearch("");
               setOpen(true);
+            }}
+            onClick={() => {
+              if (!open) {
+                setSearch("");
+                setOpen(true);
+              }
             }}
             onChange={(event) => {
               setSearch(event.target.value);
@@ -150,6 +157,11 @@ function ForceModelDropdown({
       <PopoverContent
         align="end"
         className="w-[320px] p-2"
+        onInteractOutside={(event) => {
+          if (inputAnchorRef.current?.contains(event.target as Node)) {
+            event.preventDefault();
+          }
+        }}
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
         <div className="max-h-64 space-y-0.5 overflow-y-auto">
