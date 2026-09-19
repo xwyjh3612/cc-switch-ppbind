@@ -1,0 +1,86 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    name: Build universal macOS package
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Setup pnpm
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+        run: |
+          corepack enable
+          corepack install
+          pnpm --version
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build universal DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm tauri build \
+            --target universal-apple-darwin \
+            --bundles dmg \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Collect release files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION=$(node -p "require('./package.json').version")
+          BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
+          APP_PATH=$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -name '*.app' -type d | head -1)
+          DMG_PATH=$(find "$BUNDLE_ROOT/dmg" -maxdepth 1 -name '*.dmg' -type f | head -1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "macOS .app bundle not found" >&2
+            exit 1
+          fi
+          if [ -z "$DMG_PATH" ]; then
+            echo "macOS .dmg bundle not found" >&2
+            exit 1
+          fi
+
+          mkdir -p release-macos
+          cp "$DMG_PATH" "release-macos/CC-Switch-${VERSION}-macOS-universal-unsigned.dmg"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP_PATH" \
+            "release-macos/CC-Switch-${VERSION}-macOS-universal-unsigned.zip"
+
+          (
+            cd release-macos
+            shasum -a 256 * > SHA256SUMS.txt
+          )
+          ls -lh release-macos
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CC-Switch-macOS-universal-unsigned
+          path: release-macos/*
+          if-no-files-found: error
+          retention-days: 14
