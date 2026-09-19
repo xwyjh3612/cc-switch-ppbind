@@ -207,13 +207,13 @@ export function ProjectManagerPage() {
                       {project.projectPath}
                     </div>
                     {latestModel && (
-                      <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] leading-none text-muted-foreground">
+                      <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[9px] leading-none text-muted-foreground">
                         <span className="shrink-0">
                           {t("projectManager.lastModel", {
                             defaultValue: "最近模型",
                           })}
                         </span>
-                        <span className="truncate rounded border border-border bg-muted px-1 py-px font-medium text-foreground/75">
+                        <span className="truncate rounded border border-border bg-muted px-1 py-px text-[8px] font-medium text-foreground/75">
                           {latestModel}
                         </span>
                       </div>
