@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -22,9 +22,8 @@ import { Input } from "@/components/ui/input";
 import {
   Popover,
   PopoverContent,
-  PopoverTrigger,
+  PopoverAnchor,
 } from "@/components/ui/popover";
-import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
@@ -35,8 +34,10 @@ const PROJECT_APPS: Array<{ id: AppId; label: string; icon: string }> = [
 
 interface ForceModelDropdownProps {
   value: string;
+  enabled: boolean;
   models: string[];
   selectionDisabled: boolean;
+  onDisable: () => void;
   onSelect: (model: string) => void;
   onAdd: (model: string) => Promise<void>;
   onDelete: (model: string) => Promise<void>;
@@ -44,31 +45,64 @@ interface ForceModelDropdownProps {
 
 function ForceModelDropdown({
   value,
+  enabled,
   models,
   selectionDisabled,
+  onDisable,
   onSelect,
   onAdd,
   onDelete,
 }: ForceModelDropdownProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState("");
+  const [search, setSearch] = useState("");
   const [pending, setPending] = useState(false);
-  const visibleModels =
+  const allModels =
     value && !models.includes(value) ? [value, ...models] : models;
+  const normalizedSearch = search.trim().toLowerCase();
+  const visibleModels = normalizedSearch
+    ? allModels.filter((model) =>
+        model.toLowerCase().includes(normalizedSearch),
+      )
+    : allModels;
+  const addModel = search.trim();
+  const canAddModel = Boolean(addModel) && visibleModels.length === 0;
+  const triggerText =
+    enabled && value
+      ? value
+      : value
+        ? t("projectManager.forceModelOffWithValue", {
+            defaultValue: "已关闭 · {{model}}",
+            model: value,
+          })
+        : t("projectManager.forceModelPlaceholder", {
+            defaultValue: "选择模型",
+          });
 
-  const handleAdd = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const model = draft.trim();
+  const closePicker = () => {
+    setOpen(false);
+    setSearch("");
+  };
+
+  const handleSelect = (model: string) => {
+    onSelect(model);
+    closePicker();
+  };
+
+  const handleAdd = async (model: string) => {
     if (!model || pending) return;
-
     setPending(true);
     try {
       await onAdd(model);
-      setDraft("");
+    } catch {
+      // The parent handler reports the error.
+      return;
     } finally {
       setPending(false);
     }
+
+    onSelect(model);
+    closePicker();
   };
 
   const handleDelete = async (model: string) => {
@@ -76,68 +110,110 @@ function ForceModelDropdown({
     setPending(true);
     try {
       await onDelete(model);
+    } catch {
+      // The parent handler reports the error.
     } finally {
       setPending(false);
     }
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="flex h-9 w-[180px] shrink-0 items-center justify-between gap-2 rounded-lg border bg-background px-3 text-sm outline-none transition-colors hover:border-border-hover focus:border-primary"
-          title={t("projectManager.forceModelSelect", {
-            defaultValue: "选择强制路由模型",
-          })}
-        >
-          <span
-            className={cn(
-              "min-w-0 truncate text-left",
-              !value && "text-muted-foreground",
-            )}
-          >
-            {value ||
-              t("projectManager.forceModelPlaceholder", {
-                defaultValue: "选择模型",
-              })}
-          </span>
-          <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-[280px] p-2">
-        <form onSubmit={handleAdd} className="flex items-center gap-1.5">
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) setSearch("");
+      }}
+    >
+      <PopoverAnchor asChild>
+        <div className="relative w-[220px] shrink-0">
           <Input
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder={t("projectManager.forceModelAddPlaceholder", {
-              defaultValue: "输入模型名称",
+            value={open ? search : triggerText}
+            onFocus={() => {
+              setSearch("");
+              setOpen(true);
+            }}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setOpen(true);
+            }}
+            placeholder={
+              value
+                ? t("projectManager.forceModelFilterPlaceholder", {
+                    defaultValue: "输入以过滤模型",
+                  })
+                : t("projectManager.forceModelPlaceholder", {
+                    defaultValue: "选择模型",
+                  })
+            }
+            autoComplete="off"
+            className="h-9 w-full pr-8 text-sm"
+            title={t("projectManager.forceModelSelect", {
+              defaultValue: "选择强制路由模型",
             })}
-            className="h-8 text-xs"
           />
-          <Button
-            type="submit"
-            size="sm"
-            variant="outline"
-            disabled={!draft.trim() || pending}
-            className="h-8 px-2.5"
+          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        </div>
+      </PopoverAnchor>
+      <PopoverContent
+        align="end"
+        className="w-[320px] p-2"
+        onOpenAutoFocus={(event) => event.preventDefault()}
+      >
+        <div className="max-h-64 space-y-0.5 overflow-y-auto">
+          <button
+            type="button"
+            disabled={selectionDisabled}
+            onClick={() => {
+              onDisable();
+              closePicker();
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
           >
-            <Plus className="size-3.5" />
-            {t("projectManager.forceModelAdd", { defaultValue: "新增" })}
-          </Button>
-        </form>
-
-        <div className="mt-2 max-h-52 space-y-0.5 overflow-y-auto">
-          {visibleModels.length === 0 && (
-            <div className="px-2 py-6 text-center text-xs text-muted-foreground">
-              {t("projectManager.forceModelEmpty", {
-                defaultValue: "暂无模型，请先新增",
+            <Check
+              className={cn(
+                "size-3.5 shrink-0 text-emerald-500",
+                enabled && "opacity-0",
+              )}
+            />
+            <span className="min-w-0 flex-1 truncate">
+              {t("projectManager.forceModelDisable", {
+                defaultValue: "关闭强制路由模型",
               })}
+            </span>
+          </button>
+
+          <div className="my-1 border-t border-border/60" />
+
+          {visibleModels.length === 0 && (
+            <div className="px-2 py-5 text-center">
+              <div className="text-xs text-muted-foreground">
+                {t("projectManager.forceModelEmpty", {
+                  defaultValue: "暂无匹配模型",
+                })}
+              </div>
+              {canAddModel && (
+                <button
+                  type="button"
+                  disabled={selectionDisabled || pending}
+                  onClick={() => void handleAdd(addModel)}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-primary transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Plus className="size-3.5 shrink-0" />
+                  <span className="min-w-0 truncate">
+                    {t("projectManager.forceModelAddNamed", {
+                      defaultValue: "新增“{{model}}”",
+                      model: addModel,
+                    })}
+                  </span>
+                </button>
+              )}
             </div>
           )}
           {visibleModels.map((model) => {
-            const selected = model === value;
+            const selected = enabled && model === value;
             const stale = !models.includes(model);
+            const lastUsed = !enabled && model === value;
             return (
               <div
                 key={model}
@@ -146,10 +222,7 @@ function ForceModelDropdown({
                 <button
                   type="button"
                   disabled={selectionDisabled}
-                  onClick={() => {
-                    onSelect(model);
-                    setOpen(false);
-                  }}
+                  onClick={() => handleSelect(model)}
                   className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-xs disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <Check
@@ -159,6 +232,13 @@ function ForceModelDropdown({
                     )}
                   />
                   <span className="min-w-0 flex-1 truncate">{model}</span>
+                  {lastUsed && (
+                    <span className="shrink-0 text-[9px] text-muted-foreground">
+                      {t("projectManager.forceModelLastUsed", {
+                        defaultValue: "上次使用",
+                      })}
+                    </span>
+                  )}
                   {stale && (
                     <span className="shrink-0 text-[9px] text-amber-500">
                       {t("projectManager.forceModelRemoved", {
@@ -188,7 +268,6 @@ function ForceModelDropdown({
     </Popover>
   );
 }
-
 export function ProjectManagerPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -539,12 +618,12 @@ export function ProjectManagerPage() {
 
                   <div
                     className={cn(
-                      "flex h-9 shrink-0 items-center gap-2 rounded-lg border bg-background px-3",
+                      "flex h-9 shrink-0 items-center gap-2",
                       !canUseRoute && "opacity-60",
                     )}
                     title={t("projectManager.forceModelHint", {
                       defaultValue:
-                        "开启后，该项目请求固定使用所选模型，覆盖客户端和供应商默认模型",
+                        "选择模型后开启强制路由；选择“关闭强制路由模型”恢复普通路由",
                     })}
                   >
                     <span className="whitespace-nowrap text-xs font-medium">
@@ -552,35 +631,31 @@ export function ProjectManagerPage() {
                         defaultValue: "强制路由模型",
                       })}
                     </span>
-                    <Switch
-                      checked={Boolean(route?.forceModelEnabled && forceModel)}
-                      disabled={!canUseRoute || !forceModel}
-                      onCheckedChange={(checked) =>
+                    <ForceModelDropdown
+                      value={forceModel}
+                      enabled={Boolean(route?.forceModelEnabled)}
+                      models={forceModels.data ?? []}
+                      selectionDisabled={!canUseRoute}
+                      onDisable={() =>
                         void updateForceModel(
                           project.projectPath,
                           activeProjectApp,
-                          checked,
+                          false,
                           forceModel || null,
                         )
                       }
+                      onSelect={(model) =>
+                        void updateForceModel(
+                          project.projectPath,
+                          activeProjectApp,
+                          true,
+                          model,
+                        )
+                      }
+                      onAdd={addForceModel}
+                      onDelete={deleteForceModel}
                     />
                   </div>
-
-                  <ForceModelDropdown
-                    value={forceModel}
-                    models={forceModels.data ?? []}
-                    selectionDisabled={!canUseRoute}
-                    onSelect={(model) =>
-                      void updateForceModel(
-                        project.projectPath,
-                        activeProjectApp,
-                        Boolean(route?.forceModelEnabled),
-                        model,
-                      )
-                    }
-                    onAdd={addForceModel}
-                    onDelete={deleteForceModel}
-                  />
                 </div>
               </div>
             </div>
