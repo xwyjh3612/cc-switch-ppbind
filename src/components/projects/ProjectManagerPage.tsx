@@ -128,7 +128,7 @@ function ForceModelDropdown({
       <PopoverAnchor asChild>
         <div className="relative w-[220px] shrink-0">
           <Input
-            value={open ? search : triggerText}
+            value={search}
             onFocus={() => {
               setSearch("");
               setOpen(true);
@@ -137,19 +137,11 @@ function ForceModelDropdown({
               setSearch(event.target.value);
               setOpen(true);
             }}
-            placeholder={
-              value
-                ? t("projectManager.forceModelFilterPlaceholder", {
-                    defaultValue: "输入以过滤模型",
-                  })
-                : t("projectManager.forceModelPlaceholder", {
-                    defaultValue: "选择模型",
-                  })
-            }
+            placeholder={triggerText}
             autoComplete="off"
             className="h-9 w-full pr-8 text-sm"
             title={t("projectManager.forceModelSelect", {
-              defaultValue: "选择强制路由模型",
+              defaultValue: "选择模型",
             })}
           />
           <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -626,11 +618,6 @@ export function ProjectManagerPage() {
                         "选择模型后开启强制路由；选择“关闭强制路由模型”恢复普通路由",
                     })}
                   >
-                    <span className="whitespace-nowrap text-xs font-medium">
-                      {t("projectManager.forceModel", {
-                        defaultValue: "强制路由模型",
-                      })}
-                    </span>
                     <ForceModelDropdown
                       value={forceModel}
                       enabled={Boolean(route?.forceModelEnabled)}
