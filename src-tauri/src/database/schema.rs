@@ -132,6 +132,8 @@ impl Database {
                 app_type TEXT NOT NULL,
                 provider_id TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                force_model_enabled INTEGER NOT NULL DEFAULT 0,
+                force_model TEXT,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (project_path_key, app_type)
             )",
@@ -588,6 +590,8 @@ impl Database {
                                 app_type TEXT NOT NULL,
                                 provider_id TEXT NOT NULL,
                                 enabled INTEGER NOT NULL DEFAULT 1,
+                                force_model_enabled INTEGER NOT NULL DEFAULT 0,
+                                force_model TEXT,
                                 updated_at INTEGER NOT NULL,
                                 PRIMARY KEY (project_path_key, app_type)
                             )",
@@ -595,6 +599,24 @@ impl Database {
                         )
                         .map_err(|e| AppError::Database(e.to_string()))?;
                         Self::set_user_version(conn, 20)?;
+                    }
+                    20 => {
+                        log::info!("迁移数据库从 v20 到 v21（项目强制路由模型）");
+                        if Self::table_exists(conn, "project_provider_routes")? {
+                            Self::add_column_if_missing(
+                                conn,
+                                "project_provider_routes",
+                                "force_model_enabled",
+                                "INTEGER NOT NULL DEFAULT 0",
+                            )?;
+                            Self::add_column_if_missing(
+                                conn,
+                                "project_provider_routes",
+                                "force_model",
+                                "TEXT",
+                            )?;
+                        }
+                        Self::set_user_version(conn, 21)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -3840,6 +3862,48 @@ mod tests {
         )?;
         assert_eq!(byte_offset, None, "存量行的字节游标必须为 NULL");
         assert_eq!(fingerprint, None, "存量行的尾部指纹必须为 NULL");
+        Ok(())
+    }
+    #[test]
+    fn migrate_v20_to_v21_adds_project_force_model_columns() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE project_provider_routes (
+                project_path_key TEXT NOT NULL,
+                project_path TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (project_path_key, app_type)
+             );
+             INSERT INTO project_provider_routes
+                (project_path_key, project_path, app_type, provider_id, enabled, updated_at)
+             VALUES ('c:/demo', 'C:/demo', 'codex', 'provider-1', 1, 1);",
+        )?;
+        Database::set_user_version(&conn, 20)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, SCHEMA_VERSION);
+        assert!(Database::has_column(
+            &conn,
+            "project_provider_routes",
+            "force_model_enabled"
+        )?);
+        assert!(Database::has_column(
+            &conn,
+            "project_provider_routes",
+            "force_model"
+        )?);
+        let (force_model_enabled, force_model): (i64, Option<String>) = conn.query_row(
+            "SELECT force_model_enabled, force_model
+             FROM project_provider_routes WHERE project_path_key = 'c:/demo'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(force_model_enabled, 0);
+        assert_eq!(force_model, None);
         Ok(())
     }
 }

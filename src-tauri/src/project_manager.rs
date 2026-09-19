@@ -144,6 +144,73 @@ pub fn lookup_session_project_dir(app_type: &str, session_id: &str) -> Option<St
     project_dir
 }
 
+const FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options";
+
+#[derive(Debug, Clone)]
+pub struct ProjectRouteOverride {
+    pub provider_id: String,
+    pub force_model: Option<String>,
+}
+
+fn normalize_force_model_option(model: &str) -> Result<String, AppError> {
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(AppError::InvalidInput("模型名称不能为空".to_string()));
+    }
+    if model.len() > 200 || model.contains(['\r', '\n']) {
+        return Err(AppError::InvalidInput("模型名称格式不正确".to_string()));
+    }
+    Ok(model.to_string())
+}
+
+pub fn list_force_models(db: &Database) -> Result<Vec<String>, AppError> {
+    let Some(raw) = db.get_setting(FORCE_MODEL_OPTIONS_SETTING_KEY)? else {
+        return Ok(Vec::new());
+    };
+    let parsed = match serde_json::from_str::<Vec<String>>(&raw) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            log::warn!("解析项目强制模型列表失败，将使用空列表: {error}");
+            Vec::new()
+        }
+    };
+
+    let mut models = Vec::new();
+    for model in parsed {
+        let Ok(model) = normalize_force_model_option(&model) else {
+            continue;
+        };
+        if !models.contains(&model) {
+            models.push(model);
+        }
+    }
+    Ok(models)
+}
+
+fn save_force_models(db: &Database, models: &[String]) -> Result<(), AppError> {
+    let json = serde_json::to_string(models)
+        .map_err(|error| AppError::Database(format!("序列化强制模型列表失败: {error}")))?;
+    db.set_setting(FORCE_MODEL_OPTIONS_SETTING_KEY, &json)
+}
+
+pub fn add_force_model(db: &Database, model: &str) -> Result<Vec<String>, AppError> {
+    let model = normalize_force_model_option(model)?;
+    let mut models = list_force_models(db)?;
+    if !models.contains(&model) {
+        models.push(model);
+        save_force_models(db, &models)?;
+    }
+    Ok(models)
+}
+
+pub fn delete_force_model(db: &Database, model: &str) -> Result<Vec<String>, AppError> {
+    let model = normalize_force_model_option(model)?;
+    let mut models = list_force_models(db)?;
+    models.retain(|item| item != &model);
+    save_force_models(db, &models)?;
+    Ok(models)
+}
+
 pub fn list_routes(db: &Database) -> Result<Vec<ProjectProviderRoute>, AppError> {
     db.list_project_provider_routes()
 }
@@ -162,17 +229,38 @@ pub fn upsert_route(
     db.upsert_project_provider_route(&path_key, project_path.trim(), app_type, provider_id.trim())
 }
 
+pub fn set_force_model(
+    db: &Database,
+    project_path: &str,
+    app_type: &str,
+    enabled: bool,
+    force_model: Option<&str>,
+) -> Result<ProjectProviderRoute, AppError> {
+    let path_key = normalize_project_path(project_path)
+        .ok_or_else(|| AppError::InvalidInput("项目目录不能为空".to_string()))?;
+    let force_model = match force_model {
+        Some(model) if !model.trim().is_empty() => Some(normalize_force_model_option(model)?),
+        _ => None,
+    };
+    if enabled && force_model.is_none() {
+        return Err(AppError::InvalidInput(
+            "开启强制路由模型前请先选择模型".to_string(),
+        ));
+    }
+    db.set_project_force_model_route(&path_key, app_type, enabled, force_model.as_deref())
+}
+
 pub fn delete_route(db: &Database, project_path: &str, app_type: &str) -> Result<bool, AppError> {
     let path_key = normalize_project_path(project_path)
         .ok_or_else(|| AppError::InvalidInput("项目目录不能为空".to_string()))?;
     db.delete_project_provider_route(&path_key, app_type)
 }
 
-pub fn resolve_provider_override(
+pub fn resolve_route_override(
     db: &Database,
     app_type: &str,
     session_id: &str,
-) -> Result<Option<String>, AppError> {
+) -> Result<Option<ProjectRouteOverride>, AppError> {
     let Some(project_dir) = lookup_session_project_dir(app_type, session_id) else {
         return Ok(None);
     };
@@ -195,7 +283,17 @@ pub fn resolve_provider_override(
         return Ok(None);
     }
 
-    Ok(Some(route.provider_id))
+    let force_model = route
+        .force_model_enabled
+        .then_some(route.force_model)
+        .flatten()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty());
+
+    Ok(Some(ProjectRouteOverride {
+        provider_id: route.provider_id,
+        force_model,
+    }))
 }
 
 #[cfg(test)]
@@ -250,5 +348,27 @@ mod tests {
             .unwrap();
         assert_eq!(project.sessions.len(), 2);
         assert_eq!(project.sessions[0].session_id, "claude-session");
+    }
+    #[test]
+    fn force_model_options_are_global_and_deduplicated() {
+        let db = Database::memory().expect("create memory db");
+
+        assert_eq!(list_force_models(&db).unwrap(), Vec::<String>::new());
+        assert_eq!(
+            add_force_model(&db, " gpt-5 ").unwrap(),
+            vec!["gpt-5".to_string()]
+        );
+        assert_eq!(
+            add_force_model(&db, "gpt-5").unwrap(),
+            vec!["gpt-5".to_string()]
+        );
+        assert_eq!(
+            add_force_model(&db, "claude-sonnet").unwrap(),
+            vec!["gpt-5".to_string(), "claude-sonnet".to_string()]
+        );
+        assert_eq!(
+            delete_force_model(&db, "gpt-5").unwrap(),
+            vec!["claude-sonnet".to_string()]
+        );
     }
 }

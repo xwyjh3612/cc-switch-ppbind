@@ -90,3 +90,45 @@ pub fn clear_project_provider(
     }
     project_manager::delete_route(&state.db, &projectPath, &appType).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn list_project_force_models(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    project_manager::list_force_models(&state.db).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn add_project_force_model(
+    state: State<'_, AppState>,
+    model: String,
+) -> Result<Vec<String>, String> {
+    project_manager::add_force_model(&state.db, &model).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_project_force_model(
+    state: State<'_, AppState>,
+    model: String,
+) -> Result<Vec<String>, String> {
+    project_manager::delete_force_model(&state.db, &model).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_project_force_model(
+    state: State<'_, AppState>,
+    projectPath: String,
+    appType: String,
+    enabled: bool,
+    forceModel: Option<String>,
+) -> Result<ProjectProviderRoute, String> {
+    if !matches!(appType.as_str(), "codex" | "claude") {
+        return Err(format!("不支持的项目客户端: {appType}"));
+    }
+    project_manager::set_force_model(
+        &state.db,
+        &projectPath,
+        &appType,
+        enabled,
+        forceModel.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}

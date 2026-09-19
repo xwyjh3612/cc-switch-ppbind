@@ -170,6 +170,8 @@ pub struct RequestForwarder {
     current_provider_id_at_start: String,
     /// 项目级路由不应把实际 provider 同步回全局当前 provider。
     project_route_override: bool,
+    /// 项目级强制路由模型；开启后会覆盖供应商默认模型映射。
+    force_model: Option<String>,
     /// 代理会话 ID（用于 Gemini Native shadow replay）
     session_id: String,
     /// Session ID 是否由客户端提供；生成值不能作为上游缓存身份。
@@ -200,6 +202,23 @@ impl RequestForwarder {
     pub fn with_project_route_override(mut self, enabled: bool) -> Self {
         self.project_route_override = enabled;
         self
+    }
+
+    /// Apply a project-scoped model override.
+    pub fn with_force_model(mut self, model: Option<String>) -> Self {
+        self.force_model = model.filter(|value| !value.trim().is_empty());
+        self
+    }
+
+    /// Keep the forced model authoritative across provider-specific mappings and
+    /// request transformations. All project-supported APIs carry `model` in JSON.
+    fn apply_force_model(&self, body: &mut Value) {
+        let Some(model) = self.force_model.as_deref() else {
+            return;
+        };
+        if body.is_object() {
+            body["model"] = Value::String(model.to_string());
+        }
     }
 
     /// 预防式 media 降级：发送前对 text-only 模型把图片块替换为标记。
@@ -280,6 +299,7 @@ impl RequestForwarder {
             app_handle,
             current_provider_id_at_start,
             project_route_override: false,
+            force_model: None,
             session_id,
             session_client_provided,
             rectifier_config,
@@ -1268,6 +1288,7 @@ impl RequestForwarder {
 
         // 与 CCH 对齐：请求前不做 thinking 主动改写（仅保留兼容入口）
         let mut mapped_body = normalize_thinking_type(mapped_body);
+        self.apply_force_model(&mut mapped_body);
 
         // Grok Build exposes a stable client-side model profile in config.toml.
         // Route requests to the provider's real upstream model before applying
@@ -1555,7 +1576,10 @@ impl RequestForwarder {
                     "[Codex] Restored or enriched {restored} cached function call item(s) for Chat upstream"
                 );
             }
-            super::providers::apply_codex_chat_upstream_model(provider, &mut mapped_body);
+            if self.force_model.is_none() {
+                super::providers::apply_codex_chat_upstream_model(provider, &mut mapped_body);
+            }
+            self.apply_force_model(&mut mapped_body);
             let reasoning_config =
                 super::providers::resolve_codex_chat_reasoning_config(provider, &mapped_body);
             let mut chat_body = super::providers::transform_codex_chat::responses_to_chat_completions_with_reasoning(
@@ -1572,7 +1596,10 @@ impl RequestForwarder {
             chat_body
         } else if codex_responses_to_anthropic {
             let mut mapped_body = mapped_body;
-            super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
+            if self.force_model.is_none() {
+                super::providers::apply_codex_upstream_model(provider, &mut mapped_body);
+            }
+            self.apply_force_model(&mut mapped_body);
             // Per-provider output ceiling override. Codex does not forward its
             // `model_max_output_tokens` in the request body, so honor the value
             // configured on the provider here — it takes precedence over any
@@ -1710,6 +1737,9 @@ impl RequestForwarder {
                 }
             }
         }
+        // Project-scoped model forcing is the final authority, including provider
+        // request overrides and compatibility rewrites.
+        self.apply_force_model(&mut filtered_body);
         // 出站 body 定稿后刷新真值（覆盖 Codex chat 上游模型覆写、转换层模型改写）
         if let Some(m) = filtered_body
             .get("model")
@@ -3897,6 +3927,7 @@ mod tests {
             app_handle: None,
             current_provider_id_at_start: String::new(),
             project_route_override: false,
+            force_model: None,
             session_id: String::new(),
             session_client_provided: false,
             rectifier_config: RectifierConfig::default(),
@@ -3906,6 +3937,28 @@ mod tests {
             streaming_first_byte_timeout,
             max_attempts: 1,
         }
+    }
+
+    #[test]
+    fn project_force_model_overrides_request_model() {
+        let forwarder = test_forwarder(Duration::from_secs(30), Duration::from_secs(30))
+            .with_force_model(Some("forced-model".to_string()));
+        let mut body = json!({"model": "client-model"});
+
+        forwarder.apply_force_model(&mut body);
+
+        assert_eq!(body["model"], "forced-model");
+    }
+
+    #[test]
+    fn empty_project_force_model_is_ignored() {
+        let forwarder = test_forwarder(Duration::from_secs(30), Duration::from_secs(30))
+            .with_force_model(Some("  ".to_string()));
+        let mut body = json!({"model": "client-model"});
+
+        forwarder.apply_force_model(&mut body);
+
+        assert_eq!(body["model"], "client-model");
     }
 
     #[test]

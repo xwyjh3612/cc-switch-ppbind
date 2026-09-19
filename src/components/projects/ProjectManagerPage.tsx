@@ -1,15 +1,30 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { FolderOpen, RefreshCw, Search } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  FolderOpen,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+} from "lucide-react";
 import { projectsApi, providersApi } from "@/lib/api";
+import type { ProjectDto, ProjectProviderRoute } from "@/lib/api/projects";
 import type { AppId } from "@/lib/api/types";
 import type { Provider } from "@/types";
 import { getBaseName } from "@/components/sessions/utils";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { extractErrorMessage } from "@/utils/errorUtils";
 
@@ -17,6 +32,162 @@ const PROJECT_APPS: Array<{ id: AppId; label: string; icon: string }> = [
   { id: "codex", label: "Codex", icon: "openai" },
   { id: "claude", label: "Claude Code", icon: "claude" },
 ];
+
+interface ForceModelDropdownProps {
+  value: string;
+  models: string[];
+  selectionDisabled: boolean;
+  onSelect: (model: string) => void;
+  onAdd: (model: string) => Promise<void>;
+  onDelete: (model: string) => Promise<void>;
+}
+
+function ForceModelDropdown({
+  value,
+  models,
+  selectionDisabled,
+  onSelect,
+  onAdd,
+  onDelete,
+}: ForceModelDropdownProps) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [pending, setPending] = useState(false);
+  const visibleModels =
+    value && !models.includes(value) ? [value, ...models] : models;
+
+  const handleAdd = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const model = draft.trim();
+    if (!model || pending) return;
+
+    setPending(true);
+    try {
+      await onAdd(model);
+      setDraft("");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const handleDelete = async (model: string) => {
+    if (pending) return;
+    setPending(true);
+    try {
+      await onDelete(model);
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="flex h-9 w-[180px] shrink-0 items-center justify-between gap-2 rounded-lg border bg-background px-3 text-sm outline-none transition-colors hover:border-border-hover focus:border-primary"
+          title={t("projectManager.forceModelSelect", {
+            defaultValue: "选择强制路由模型",
+          })}
+        >
+          <span
+            className={cn(
+              "min-w-0 truncate text-left",
+              !value && "text-muted-foreground",
+            )}
+          >
+            {value ||
+              t("projectManager.forceModelPlaceholder", {
+                defaultValue: "选择模型",
+              })}
+          </span>
+          <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[280px] p-2">
+        <form onSubmit={handleAdd} className="flex items-center gap-1.5">
+          <Input
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={t("projectManager.forceModelAddPlaceholder", {
+              defaultValue: "输入模型名称",
+            })}
+            className="h-8 text-xs"
+          />
+          <Button
+            type="submit"
+            size="sm"
+            variant="outline"
+            disabled={!draft.trim() || pending}
+            className="h-8 px-2.5"
+          >
+            <Plus className="size-3.5" />
+            {t("projectManager.forceModelAdd", { defaultValue: "新增" })}
+          </Button>
+        </form>
+
+        <div className="mt-2 max-h-52 space-y-0.5 overflow-y-auto">
+          {visibleModels.length === 0 && (
+            <div className="px-2 py-6 text-center text-xs text-muted-foreground">
+              {t("projectManager.forceModelEmpty", {
+                defaultValue: "暂无模型，请先新增",
+              })}
+            </div>
+          )}
+          {visibleModels.map((model) => {
+            const selected = model === value;
+            const stale = !models.includes(model);
+            return (
+              <div
+                key={model}
+                className="group flex items-center gap-1 rounded-md hover:bg-muted"
+              >
+                <button
+                  type="button"
+                  disabled={selectionDisabled}
+                  onClick={() => {
+                    onSelect(model);
+                    setOpen(false);
+                  }}
+                  className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Check
+                    className={cn(
+                      "size-3.5 shrink-0 text-emerald-500",
+                      !selected && "opacity-0",
+                    )}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{model}</span>
+                  {stale && (
+                    <span className="shrink-0 text-[9px] text-amber-500">
+                      {t("projectManager.forceModelRemoved", {
+                        defaultValue: "已移除",
+                      })}
+                    </span>
+                  )}
+                </button>
+                {!stale && (
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => void handleDelete(model)}
+                    className="mr-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 disabled:opacity-40"
+                    title={t("projectManager.forceModelDelete", {
+                      defaultValue: "从全局列表删除",
+                    })}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export function ProjectManagerPage() {
   const { t } = useTranslation();
@@ -27,6 +198,12 @@ export function ProjectManagerPage() {
   const projects = useQuery({
     queryKey: ["projects"],
     queryFn: () => projectsApi.list(),
+  });
+
+  const forceModels = useQuery({
+    queryKey: ["project-force-models"],
+    queryFn: () => projectsApi.listForceModels(),
+    staleTime: Infinity,
   });
 
   const providerQueries = useQueries({
@@ -70,6 +247,39 @@ export function ProjectManagerPage() {
     });
   }, [activeProjectApp, projects.data, search]);
 
+  const setRouteInCache = (
+    projectPath: string,
+    appType: AppId,
+    route: ProjectProviderRoute,
+  ) => {
+    queryClient.setQueryData<ProjectDto[]>(["projects"], (current) =>
+      current?.map((project) =>
+        project.projectPath === projectPath
+          ? {
+              ...project,
+              routes: [
+                ...project.routes.filter((item) => item.appType !== appType),
+                route,
+              ],
+            }
+          : project,
+      ),
+    );
+  };
+
+  const removeRouteFromCache = (projectPath: string, appType: AppId) => {
+    queryClient.setQueryData<ProjectDto[]>(["projects"], (current) =>
+      current?.map((project) =>
+        project.projectPath === projectPath
+          ? {
+              ...project,
+              routes: project.routes.filter((item) => item.appType !== appType),
+            }
+          : project,
+      ),
+    );
+  };
+
   const updateProvider = async (
     projectPath: string,
     appType: AppId,
@@ -78,10 +288,15 @@ export function ProjectManagerPage() {
     try {
       if (!providerId) {
         await projectsApi.clearProvider(projectPath, appType);
+        removeRouteFromCache(projectPath, appType);
       } else {
-        await projectsApi.setProvider({ projectPath, appType, providerId });
+        const route = await projectsApi.setProvider({
+          projectPath,
+          appType,
+          providerId,
+        });
+        setRouteInCache(projectPath, appType, route);
       }
-      await queryClient.invalidateQueries({ queryKey: ["projects"] });
       toast.success(
         t("projectManager.routeUpdated", {
           defaultValue: "项目供应商已更新",
@@ -94,6 +309,65 @@ export function ProjectManagerPage() {
             defaultValue: "项目供应商更新失败",
           }),
       );
+    }
+  };
+
+  const updateForceModel = async (
+    projectPath: string,
+    appType: AppId,
+    enabled: boolean,
+    forceModel?: string | null,
+  ) => {
+    try {
+      const route = await projectsApi.setForceModel({
+        projectPath,
+        appType,
+        enabled,
+        forceModel,
+      });
+      setRouteInCache(projectPath, appType, route);
+      toast.success(
+        t("projectManager.forceModelUpdated", {
+          defaultValue: "强制路由模型已更新",
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("projectManager.forceModelUpdateFailed", {
+            defaultValue: "强制路由模型更新失败",
+          }),
+      );
+    }
+  };
+
+  const addForceModel = async (model: string) => {
+    try {
+      const models = await projectsApi.addForceModel(model);
+      queryClient.setQueryData(["project-force-models"], models);
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("projectManager.forceModelAddFailed", {
+            defaultValue: "新增模型失败",
+          }),
+      );
+      throw error;
+    }
+  };
+
+  const deleteForceModel = async (model: string) => {
+    try {
+      const models = await projectsApi.deleteForceModel(model);
+      queryClient.setQueryData(["project-force-models"], models);
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("projectManager.forceModelDeleteFailed", {
+            defaultValue: "删除模型失败",
+          }),
+      );
+      throw error;
     }
   };
 
@@ -141,19 +415,19 @@ export function ProjectManagerPage() {
             size="icon"
             onClick={() => void projects.refetch()}
             disabled={projects.isFetching}
-            title={t("common.refresh", { defaultValue: "刷新" })}
+            title={t("projectManager.refresh", { defaultValue: "刷新" })}
           >
             <RefreshCw
-              className={projects.isFetching ? "size-4 animate-spin" : "size-4"}
+              className={cn("size-4", projects.isFetching && "animate-spin")}
             />
           </Button>
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
         {projects.isLoading && (
-          <div className="py-10 text-center text-sm text-muted-foreground">
-            {t("common.loading", { defaultValue: "加载中…" })}
+          <div className="rounded-xl border border-dashed p-10 text-center text-sm text-muted-foreground">
+            {t("projectManager.loading", { defaultValue: "正在扫描项目..." })}
           </div>
         )}
 
@@ -180,9 +454,12 @@ export function ProjectManagerPage() {
           const providerId = route?.providerId ?? "";
           const routeProviderMissing =
             Boolean(route?.providerId) && !providers[route!.providerId];
+          const canUseRoute = Boolean(route) && !routeProviderMissing;
+          const forceModel = route?.forceModel?.trim() ?? "";
           const latestModel = project.sessions.find(
             (session) =>
-              session.providerId === activeProjectApp && Boolean(session.lastModel),
+              session.providerId === activeProjectApp &&
+              Boolean(session.lastModel),
           )?.lastModel;
 
           return (
@@ -221,43 +498,90 @@ export function ProjectManagerPage() {
                   </div>
                 </div>
 
-                <select
-                  value={providerId}
-                  onChange={(event) =>
-                    void updateProvider(
-                      project.projectPath,
-                      activeProjectApp,
-                      event.target.value,
-                    )
-                  }
-                  className={cn(
-                    "h-9 w-[190px] shrink-0 rounded-lg border bg-background px-3 text-sm outline-none transition-colors focus:border-primary",
-                    routeProviderMissing && "border-amber-500/60",
-                  )}
-                  title={t("projectManager.selectProvider", {
-                    defaultValue: "选择项目供应商",
-                  })}
-                >
-                  <option value="">
-                    {t("projectManager.followGlobal", {
-                      defaultValue: "默认供应商",
+                <div className="flex shrink-0 items-center gap-2">
+                  <select
+                    value={providerId}
+                    onChange={(event) =>
+                      void updateProvider(
+                        project.projectPath,
+                        activeProjectApp,
+                        event.target.value,
+                      )
+                    }
+                    className={cn(
+                      "h-9 w-[170px] shrink-0 rounded-lg border bg-background px-3 text-sm outline-none transition-colors focus:border-primary",
+                      routeProviderMissing && "border-amber-500/60",
+                    )}
+                    title={t("projectManager.selectProvider", {
+                      defaultValue: "选择项目供应商",
                     })}
-                  </option>
-                  {routeProviderMissing && route && (
-                    <option value={route.providerId}>
-                      {route.providerId}（
-                      {t("projectManager.providerMissing", {
-                        defaultValue: "已不存在",
+                  >
+                    <option value="">
+                      {t("projectManager.followGlobal", {
+                        defaultValue: "默认供应商",
                       })}
-                      ）
                     </option>
-                  )}
-                  {Object.entries(providers).map(([id, provider]) => (
-                    <option key={id} value={id}>
-                      {provider.name || id}
-                    </option>
-                  ))}
-                </select>
+                    {routeProviderMissing && route && (
+                      <option value={route.providerId}>
+                        {route.providerId}（
+                        {t("projectManager.providerMissing", {
+                          defaultValue: "已不存在",
+                        })}
+                        ）
+                      </option>
+                    )}
+                    {Object.entries(providers).map(([id, provider]) => (
+                      <option key={id} value={id}>
+                        {provider.name || id}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div
+                    className={cn(
+                      "flex h-9 shrink-0 items-center gap-2 rounded-lg border bg-background px-3",
+                      !canUseRoute && "opacity-60",
+                    )}
+                    title={t("projectManager.forceModelHint", {
+                      defaultValue:
+                        "开启后，该项目请求固定使用所选模型，覆盖客户端和供应商默认模型",
+                    })}
+                  >
+                    <span className="whitespace-nowrap text-xs font-medium">
+                      {t("projectManager.forceModel", {
+                        defaultValue: "强制路由模型",
+                      })}
+                    </span>
+                    <Switch
+                      checked={Boolean(route?.forceModelEnabled && forceModel)}
+                      disabled={!canUseRoute || !forceModel}
+                      onCheckedChange={(checked) =>
+                        void updateForceModel(
+                          project.projectPath,
+                          activeProjectApp,
+                          checked,
+                          forceModel || null,
+                        )
+                      }
+                    />
+                  </div>
+
+                  <ForceModelDropdown
+                    value={forceModel}
+                    models={forceModels.data ?? []}
+                    selectionDisabled={!canUseRoute}
+                    onSelect={(model) =>
+                      void updateForceModel(
+                        project.projectPath,
+                        activeProjectApp,
+                        Boolean(route?.forceModelEnabled),
+                        model,
+                      )
+                    }
+                    onAdd={addForceModel}
+                    onDelete={deleteForceModel}
+                  />
+                </div>
               </div>
             </div>
           );

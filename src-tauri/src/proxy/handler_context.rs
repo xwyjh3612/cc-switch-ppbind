@@ -66,6 +66,8 @@ pub struct RequestContext {
     pub session_client_provided: bool,
     /// 是否命中了项目级供应商覆盖。
     pub project_route_override: bool,
+    /// 项目级强制路由模型；仅在该项目显式开启时生效。
+    pub force_model: Option<String>,
     /// 整流器配置
     pub rectifier_config: RectifierConfig,
     /// 优化器配置
@@ -133,15 +135,21 @@ impl RequestContext {
 
         // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）。
         // 项目覆盖只影响本次请求，不修改全局 current provider。
-        let project_provider_id =
-            crate::project_manager::resolve_provider_override(&state.db, app_type_str, &session_id)
+        let project_override =
+            crate::project_manager::resolve_route_override(&state.db, app_type_str, &session_id)
                 .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
-        let project_route_override = project_provider_id.is_some();
-        let providers = match project_provider_id {
+        let project_route_override = project_override.is_some();
+        let force_model = project_override
+            .as_ref()
+            .and_then(|route| route.force_model.clone());
+        let providers = match project_override
+            .as_ref()
+            .map(|route| route.provider_id.as_str())
+        {
             Some(provider_id) => {
                 state
                     .provider_router
-                    .select_specific_provider(app_type_str, &provider_id)
+                    .select_specific_provider(app_type_str, provider_id)
                     .await
             }
             None => state.provider_router.select_providers(app_type_str).await,
@@ -180,6 +188,7 @@ impl RequestContext {
             session_id,
             session_client_provided: session_result.client_provided,
             project_route_override,
+            force_model,
             rectifier_config,
             optimizer_config,
             copilot_optimizer_config,
@@ -253,6 +262,7 @@ impl RequestContext {
             max_retries,
         )
         .with_project_route_override(self.project_route_override)
+        .with_force_model(self.force_model.clone())
     }
 
     /// 获取 Provider 列表（用于故障转移）
