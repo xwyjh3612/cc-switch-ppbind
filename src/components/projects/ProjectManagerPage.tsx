@@ -66,6 +66,12 @@ function ForceModelDropdown({
         model.toLowerCase().includes(normalizedSearch),
       )
     : allModels;
+  const orderedModels =
+    normalizedSearch || !value
+      ? visibleModels
+      : visibleModels.includes(value)
+        ? [value, ...visibleModels.filter((model) => model !== value)]
+        : visibleModels;
   const addModel = search.trim();
   const canAddModel = Boolean(addModel) && visibleModels.length === 0;
   const triggerText =
@@ -164,7 +170,7 @@ function ForceModelDropdown({
         }}
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
-        <div className="max-h-64 space-y-0.5 overflow-y-auto">
+        <div className="max-h-[min(60vh,420px)] space-y-0.5 overflow-y-auto overscroll-contain">
           <button
             type="button"
             disabled={selectionDisabled}
@@ -172,7 +178,10 @@ function ForceModelDropdown({
               onDisable();
               closePicker();
             }}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60",
+              !enabled && "bg-muted/60",
+            )}
           >
             <Check
               className={cn(
@@ -214,14 +223,17 @@ function ForceModelDropdown({
               )}
             </div>
           )}
-          {visibleModels.map((model) => {
+          {orderedModels.map((model) => {
             const selected = enabled && model === value;
             const stale = !models.includes(model);
             const lastUsed = !enabled && model === value;
             return (
               <div
                 key={model}
-                className="group flex items-center gap-1 rounded-md hover:bg-muted"
+                className={cn(
+                  "group flex items-center gap-1 rounded-md hover:bg-muted",
+                  selected && "bg-muted/60",
+                )}
               >
                 <button
                   type="button"
@@ -312,6 +324,15 @@ function ProviderDropdown({
       )
     : allOptions;
   const selectedOption = allOptions.find((option) => option.id === value);
+  const orderedOptions =
+    normalizedSearch || !value || !selectedOption
+      ? visibleOptions
+      : visibleOptions.some((option) => option.id === value)
+        ? [
+            selectedOption,
+            ...visibleOptions.filter((option) => option.id !== value),
+          ]
+        : visibleOptions;
   const triggerText = value
     ? selectedOption?.missing
       ? `${selectedOption.name}（${t("projectManager.providerMissing", {
@@ -378,11 +399,14 @@ function ProviderDropdown({
         }}
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
-        <div className="max-h-64 space-y-0.5 overflow-y-auto">
+        <div className="max-h-[min(60vh,420px)] space-y-0.5 overflow-y-auto overscroll-contain">
           <button
             type="button"
             onClick={() => handleSelect("")}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted"
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
+              !value && "bg-muted/60",
+            )}
           >
             <Check
               className={cn(
@@ -409,14 +433,17 @@ function ProviderDropdown({
             </div>
           )}
 
-          {visibleOptions.map((option) => {
+          {orderedOptions.map((option) => {
             const selected = option.id === value;
             return (
               <button
                 key={option.id}
                 type="button"
                 onClick={() => handleSelect(option.id)}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted"
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
+                  selected && "bg-muted/60",
+                )}
               >
                 <Check
                   className={cn(
