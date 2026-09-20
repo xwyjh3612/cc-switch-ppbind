@@ -127,7 +127,7 @@ function ForceModelDropdown({
       }}
     >
       <PopoverAnchor asChild>
-        <div ref={inputAnchorRef} className="relative w-[220px] shrink-0">
+        <div ref={inputAnchorRef} className="relative w-[170px] shrink-0">
           <Input
             value={search}
             onFocus={() => {
@@ -156,7 +156,7 @@ function ForceModelDropdown({
       </PopoverAnchor>
       <PopoverContent
         align="end"
-        className="w-[320px] p-2"
+        className="w-[240px] p-2"
         onInteractOutside={(event) => {
           if (inputAnchorRef.current?.contains(event.target as Node)) {
             event.preventDefault();
@@ -265,6 +265,174 @@ function ForceModelDropdown({
                   </button>
                 )}
               </div>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+interface ProviderDropdownOption {
+  id: string;
+  name: string;
+  missing?: boolean;
+}
+
+interface ProviderDropdownProps {
+  value: string;
+  missingProviderId?: string;
+  options: ProviderDropdownOption[];
+  onChange: (providerId: string) => void;
+}
+
+function ProviderDropdown({
+  value,
+  missingProviderId,
+  options,
+  onChange,
+}: ProviderDropdownProps) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const inputAnchorRef = useRef<HTMLDivElement>(null);
+  const allOptions =
+    missingProviderId &&
+    !options.some((option) => option.id === missingProviderId)
+      ? [
+          { id: missingProviderId, name: missingProviderId, missing: true },
+          ...options,
+        ]
+      : options;
+  const normalizedSearch = search.trim().toLowerCase();
+  const visibleOptions = normalizedSearch
+    ? allOptions.filter(
+        (option) =>
+          option.id.toLowerCase().includes(normalizedSearch) ||
+          option.name.toLowerCase().includes(normalizedSearch),
+      )
+    : allOptions;
+  const selectedOption = allOptions.find((option) => option.id === value);
+  const triggerText = value
+    ? selectedOption?.missing
+      ? `${selectedOption.name}（${t("projectManager.providerMissing", {
+          defaultValue: "已不存在",
+        })}）`
+      : selectedOption?.name || value
+    : t("projectManager.followGlobal", {
+        defaultValue: "默认供应商",
+      });
+
+  const closePicker = () => {
+    setOpen(false);
+    setSearch("");
+  };
+
+  const handleSelect = (providerId: string) => {
+    onChange(providerId);
+    closePicker();
+  };
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) setSearch("");
+      }}
+    >
+      <PopoverAnchor asChild>
+        <div ref={inputAnchorRef} className="relative w-[170px] shrink-0">
+          <Input
+            value={search}
+            onFocus={() => {
+              setSearch("");
+              setOpen(true);
+            }}
+            onClick={() => {
+              if (!open) {
+                setSearch("");
+                setOpen(true);
+              }
+            }}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setOpen(true);
+            }}
+            placeholder={triggerText}
+            autoComplete="off"
+            className="h-9 w-full pr-8 text-sm"
+            title={t("projectManager.selectProvider", {
+              defaultValue: "选择项目供应商",
+            })}
+          />
+          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        </div>
+      </PopoverAnchor>
+      <PopoverContent
+        align="end"
+        className="w-[240px] p-2"
+        onInteractOutside={(event) => {
+          if (inputAnchorRef.current?.contains(event.target as Node)) {
+            event.preventDefault();
+          }
+        }}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+      >
+        <div className="max-h-64 space-y-0.5 overflow-y-auto">
+          <button
+            type="button"
+            onClick={() => handleSelect("")}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted"
+          >
+            <Check
+              className={cn(
+                "size-3.5 shrink-0 text-emerald-500",
+                value && "opacity-0",
+              )}
+            />
+            <span className="min-w-0 flex-1 truncate">
+              {t("projectManager.followGlobal", {
+                defaultValue: "默认供应商",
+              })}
+            </span>
+          </button>
+
+          {visibleOptions.length > 0 && (
+            <div className="my-1 border-t border-border/60" />
+          )}
+
+          {normalizedSearch && visibleOptions.length === 0 && (
+            <div className="px-2 py-5 text-center text-xs text-muted-foreground">
+              {t("projectManager.providerEmpty", {
+                defaultValue: "暂无匹配供应商",
+              })}
+            </div>
+          )}
+
+          {visibleOptions.map((option) => {
+            const selected = option.id === value;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => handleSelect(option.id)}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted"
+              >
+                <Check
+                  className={cn(
+                    "size-3.5 shrink-0 text-emerald-500",
+                    !selected && "opacity-0",
+                  )}
+                />
+                <span className="min-w-0 flex-1 truncate">{option.name}</span>
+                {option.missing && (
+                  <span className="shrink-0 text-[9px] text-amber-500">
+                    {t("projectManager.providerMissing", {
+                      defaultValue: "已不存在",
+                    })}
+                  </span>
+                )}
+              </button>
             );
           })}
         </div>
@@ -456,6 +624,15 @@ export function ProjectManagerPage() {
 
   const providers = providerMaps[activeProjectApp] ?? {};
 
+  const providerOptions = useMemo(
+    () =>
+      Object.entries(providers).map(([id, provider]) => ({
+        id,
+        name: provider.name || id,
+      })),
+    [providers],
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden px-6 pt-4 pb-8">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
@@ -582,43 +759,20 @@ export function ProjectManagerPage() {
                 </div>
 
                 <div className="flex shrink-0 items-center gap-2">
-                  <select
+                  <ProviderDropdown
                     value={providerId}
-                    onChange={(event) =>
+                    missingProviderId={
+                      routeProviderMissing ? route?.providerId : undefined
+                    }
+                    options={providerOptions}
+                    onChange={(nextProviderId) =>
                       void updateProvider(
                         project.projectPath,
                         activeProjectApp,
-                        event.target.value,
+                        nextProviderId,
                       )
                     }
-                    className={cn(
-                      "h-9 w-[170px] shrink-0 rounded-lg border bg-background px-3 text-sm outline-none transition-colors focus:border-primary",
-                      routeProviderMissing && "border-amber-500/60",
-                    )}
-                    title={t("projectManager.selectProvider", {
-                      defaultValue: "选择项目供应商",
-                    })}
-                  >
-                    <option value="">
-                      {t("projectManager.followGlobal", {
-                        defaultValue: "默认供应商",
-                      })}
-                    </option>
-                    {routeProviderMissing && route && (
-                      <option value={route.providerId}>
-                        {route.providerId}（
-                        {t("projectManager.providerMissing", {
-                          defaultValue: "已不存在",
-                        })}
-                        ）
-                      </option>
-                    )}
-                    {Object.entries(providers).map(([id, provider]) => (
-                      <option key={id} value={id}>
-                        {provider.name || id}
-                      </option>
-                    ))}
-                  </select>
+                  />
 
                   <div
                     className={cn(
