@@ -162,7 +162,7 @@ function ForceModelDropdown({
       </PopoverAnchor>
       <PopoverContent
         align="end"
-        className="w-[240px] p-2"
+        className="w-[240px] overflow-hidden p-0"
         onInteractOutside={(event) => {
           if (inputAnchorRef.current?.contains(event.target as Node)) {
             event.preventDefault();
@@ -170,7 +170,7 @@ function ForceModelDropdown({
         }}
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
-        <div className="max-h-[min(60vh,420px)] space-y-0.5 overflow-y-auto overscroll-contain">
+        <div className="max-h-[min(60vh,420px)] overflow-y-auto overscroll-contain">
           <button
             type="button"
             disabled={selectionDisabled}
@@ -179,7 +179,7 @@ function ForceModelDropdown({
               closePicker();
             }}
             className={cn(
-              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60",
+              "flex w-full items-center gap-2 rounded-none px-3 py-1.5 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60",
               !enabled && "bg-muted/60",
             )}
           >
@@ -231,7 +231,7 @@ function ForceModelDropdown({
               <div
                 key={model}
                 className={cn(
-                  "group flex items-center gap-1 rounded-md hover:bg-muted",
+                  "group flex items-center gap-1 rounded-none hover:bg-muted",
                   selected && "bg-muted/60",
                 )}
               >
@@ -239,7 +239,7 @@ function ForceModelDropdown({
                   type="button"
                   disabled={selectionDisabled}
                   onClick={() => handleSelect(model)}
-                  className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                  className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-xs disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <Check
                     className={cn(
@@ -268,7 +268,7 @@ function ForceModelDropdown({
                     type="button"
                     disabled={pending}
                     onClick={() => void handleDelete(model)}
-                    className="mr-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 disabled:opacity-40"
+                    className="mr-2 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 disabled:opacity-40"
                     title={t("projectManager.forceModelDelete", {
                       defaultValue: "从全局列表删除",
                     })}
@@ -391,7 +391,7 @@ function ProviderDropdown({
       </PopoverAnchor>
       <PopoverContent
         align="end"
-        className="w-[240px] p-2"
+        className="w-[240px] overflow-hidden p-0"
         onInteractOutside={(event) => {
           if (inputAnchorRef.current?.contains(event.target as Node)) {
             event.preventDefault();
@@ -399,12 +399,12 @@ function ProviderDropdown({
         }}
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
-        <div className="max-h-[min(60vh,420px)] space-y-0.5 overflow-y-auto overscroll-contain">
+        <div className="max-h-[min(60vh,420px)] overflow-y-auto overscroll-contain">
           <button
             type="button"
             onClick={() => handleSelect("")}
             className={cn(
-              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
+              "flex w-full items-center gap-2 rounded-none px-3 py-1.5 text-left text-xs hover:bg-muted",
               !value && "bg-muted/60",
             )}
           >
@@ -441,7 +441,7 @@ function ProviderDropdown({
                 type="button"
                 onClick={() => handleSelect(option.id)}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
+                  "flex w-full items-center gap-2 rounded-none px-3 py-1.5 text-left text-xs hover:bg-muted",
                   selected && "bg-muted/60",
                 )}
               >
