@@ -8,6 +8,7 @@ import {
   FolderOpen,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Trash2,
 } from "lucide-react";
@@ -17,6 +18,7 @@ import type { AppId } from "@/lib/api/types";
 import type { Provider } from "@/types";
 import { getBaseName } from "@/components/sessions/utils";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -494,6 +496,8 @@ export function ProjectManagerPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [activeProjectApp, setActiveProjectApp] = useState<AppId>("codex");
+  const [resetTargetApp, setResetTargetApp] = useState<AppId | null>(null);
+  const [resettingProviders, setResettingProviders] = useState(false);
 
   const projects = useQuery({
     queryKey: ["projects"],
@@ -501,8 +505,8 @@ export function ProjectManagerPage() {
   });
 
   const forceModels = useQuery({
-    queryKey: ["project-force-models"],
-    queryFn: () => projectsApi.listForceModels(),
+    queryKey: ["project-force-models", activeProjectApp],
+    queryFn: () => projectsApi.listForceModels(activeProjectApp),
     staleTime: Infinity,
   });
 
@@ -546,6 +550,28 @@ export function ProjectManagerPage() {
       );
     });
   }, [activeProjectApp, projects.data, search]);
+
+  const activeRouteCount = useMemo(
+    () =>
+      (projects.data ?? []).filter((project) =>
+        project.routes.some(
+          (route) => route.appType === activeProjectApp && route.enabled,
+        ),
+      ).length,
+    [activeProjectApp, projects.data],
+  );
+
+  const resetRouteCount = useMemo(
+    () =>
+      resetTargetApp
+        ? (projects.data ?? []).filter((project) =>
+            project.routes.some(
+              (route) => route.appType === resetTargetApp && route.enabled,
+            ),
+          ).length
+        : 0,
+    [projects.data, resetTargetApp],
+  );
 
   const setRouteInCache = (
     projectPath: string,
@@ -641,10 +667,10 @@ export function ProjectManagerPage() {
     }
   };
 
-  const addForceModel = async (model: string) => {
+  const addForceModel = async (appType: AppId, model: string) => {
     try {
-      const models = await projectsApi.addForceModel(model);
-      queryClient.setQueryData(["project-force-models"], models);
+      const models = await projectsApi.addForceModel(appType, model);
+      queryClient.setQueryData(["project-force-models", appType], models);
     } catch (error) {
       toast.error(
         extractErrorMessage(error) ||
@@ -656,10 +682,10 @@ export function ProjectManagerPage() {
     }
   };
 
-  const deleteForceModel = async (model: string) => {
+  const deleteForceModel = async (appType: AppId, model: string) => {
     try {
-      const models = await projectsApi.deleteForceModel(model);
-      queryClient.setQueryData(["project-force-models"], models);
+      const models = await projectsApi.deleteForceModel(appType, model);
+      queryClient.setQueryData(["project-force-models", appType], models);
     } catch (error) {
       toast.error(
         extractErrorMessage(error) ||
@@ -668,6 +694,38 @@ export function ProjectManagerPage() {
           }),
       );
       throw error;
+    }
+  };
+
+  const resetAllProviders = async () => {
+    if (!resetTargetApp || resettingProviders) return;
+
+    const appType = resetTargetApp;
+    setResettingProviders(true);
+    try {
+      const count = await projectsApi.resetProviders(appType);
+      queryClient.setQueryData<ProjectDto[]>(["projects"], (current) =>
+        current?.map((project) => ({
+          ...project,
+          routes: project.routes.filter((route) => route.appType !== appType),
+        })),
+      );
+      setResetTargetApp(null);
+      toast.success(
+        t("projectManager.resetProvidersSuccess", {
+          defaultValue: "已将 {{count}} 个项目恢复为默认供应商",
+          count,
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("projectManager.resetProvidersFailed", {
+            defaultValue: "批量恢复默认供应商失败",
+          }),
+      );
+    } finally {
+      setResettingProviders(false);
     }
   };
 
@@ -708,6 +766,19 @@ export function ProjectManagerPage() {
         </div>
 
         <div className="flex min-w-0 flex-1 items-center justify-end gap-2 sm:flex-none">
+          <Button
+            variant="outline"
+            onClick={() => setResetTargetApp(activeProjectApp)}
+            disabled={activeRouteCount === 0 || resettingProviders}
+            title={t("projectManager.resetProvidersHint", {
+              defaultValue: "将当前项目类型的所有项目恢复为默认供应商",
+            })}
+          >
+            <RotateCcw className="mr-2 size-4" />
+            {t("projectManager.resetProviders", {
+              defaultValue: "全部恢复默认",
+            })}
+          </Button>
           <div className="relative min-w-0 flex-1 sm:w-64">
             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -854,8 +925,10 @@ export function ProjectManagerPage() {
                           model,
                         )
                       }
-                      onAdd={addForceModel}
-                      onDelete={deleteForceModel}
+                      onAdd={(model) => addForceModel(activeProjectApp, model)}
+                      onDelete={(model) =>
+                        deleteForceModel(activeProjectApp, model)
+                      }
                     />
                   </div>
                 </div>
@@ -864,6 +937,27 @@ export function ProjectManagerPage() {
           );
         })}
       </div>
+
+      <ConfirmDialog
+        isOpen={resetTargetApp !== null}
+        title={t("projectManager.resetProvidersTitle", {
+          defaultValue: "恢复默认供应商",
+        })}
+        message={t("projectManager.resetProvidersConfirm", {
+          defaultValue:
+            "将把 {{app}} 下的 {{count}} 个项目全部恢复为默认供应商，并关闭这些项目的强制模型路由。\n\n此操作不会影响另一项目类型。",
+          app: resetTargetApp === "claude" ? "Claude Code" : "Codex",
+          count: resetRouteCount,
+        })}
+        confirmText={t("projectManager.resetProvidersConfirmButton", {
+          defaultValue: "确认重置",
+        })}
+        pending={resettingProviders}
+        onConfirm={() => void resetAllProviders()}
+        onCancel={() => {
+          if (!resettingProviders) setResetTargetApp(null);
+        }}
+      />
     </div>
   );
 }

@@ -144,7 +144,9 @@ pub fn lookup_session_project_dir(app_type: &str, session_id: &str) -> Option<St
     project_dir
 }
 
-const FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options";
+const LEGACY_FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options";
+const CODEX_FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options_codex";
+const CLAUDE_FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options_claude";
 
 #[derive(Debug, Clone)]
 pub struct ProjectRouteOverride {
@@ -163,11 +165,18 @@ fn normalize_force_model_option(model: &str) -> Result<String, AppError> {
     Ok(model.to_string())
 }
 
-pub fn list_force_models(db: &Database) -> Result<Vec<String>, AppError> {
-    let Some(raw) = db.get_setting(FORCE_MODEL_OPTIONS_SETTING_KEY)? else {
-        return Ok(Vec::new());
-    };
-    let parsed = match serde_json::from_str::<Vec<String>>(&raw) {
+fn force_model_options_setting_key(app_type: &str) -> Result<&'static str, AppError> {
+    match app_type {
+        "codex" => Ok(CODEX_FORCE_MODEL_OPTIONS_SETTING_KEY),
+        "claude" => Ok(CLAUDE_FORCE_MODEL_OPTIONS_SETTING_KEY),
+        _ => Err(AppError::InvalidInput(format!(
+            "不支持的项目客户端: {app_type}"
+        ))),
+    }
+}
+
+fn parse_force_models(raw: &str) -> Vec<String> {
+    let parsed = match serde_json::from_str::<Vec<String>>(raw) {
         Ok(parsed) => parsed,
         Err(error) => {
             log::warn!("解析项目强制模型列表失败，将使用空列表: {error}");
@@ -184,30 +193,54 @@ pub fn list_force_models(db: &Database) -> Result<Vec<String>, AppError> {
             models.push(model);
         }
     }
+    models
+}
+
+pub fn list_force_models(db: &Database, app_type: &str) -> Result<Vec<String>, AppError> {
+    let setting_key = force_model_options_setting_key(app_type)?;
+    if let Some(raw) = db.get_setting(setting_key)? {
+        return Ok(parse_force_models(&raw));
+    }
+
+    // 兼容旧版共用列表：每个客户端首次读取时复制一份，之后各自独立维护。
+    let models = db
+        .get_setting(LEGACY_FORCE_MODEL_OPTIONS_SETTING_KEY)?
+        .map(|raw| parse_force_models(&raw))
+        .unwrap_or_default();
+    save_force_models(db, app_type, &models)?;
     Ok(models)
 }
 
-fn save_force_models(db: &Database, models: &[String]) -> Result<(), AppError> {
+fn save_force_models(db: &Database, app_type: &str, models: &[String]) -> Result<(), AppError> {
+    let setting_key = force_model_options_setting_key(app_type)?;
     let json = serde_json::to_string(models)
         .map_err(|error| AppError::Database(format!("序列化强制模型列表失败: {error}")))?;
-    db.set_setting(FORCE_MODEL_OPTIONS_SETTING_KEY, &json)
+    db.set_setting(setting_key, &json)
 }
 
-pub fn add_force_model(db: &Database, model: &str) -> Result<Vec<String>, AppError> {
+pub fn add_force_model(
+    db: &Database,
+    app_type: &str,
+    model: &str,
+) -> Result<Vec<String>, AppError> {
     let model = normalize_force_model_option(model)?;
-    let mut models = list_force_models(db)?;
+    let mut models = list_force_models(db, app_type)?;
     if !models.contains(&model) {
         models.push(model);
-        save_force_models(db, &models)?;
+        save_force_models(db, app_type, &models)?;
     }
     Ok(models)
 }
 
-pub fn delete_force_model(db: &Database, model: &str) -> Result<Vec<String>, AppError> {
+pub fn delete_force_model(
+    db: &Database,
+    app_type: &str,
+    model: &str,
+) -> Result<Vec<String>, AppError> {
     let model = normalize_force_model_option(model)?;
-    let mut models = list_force_models(db)?;
+    let mut models = list_force_models(db, app_type)?;
     models.retain(|item| item != &model);
-    save_force_models(db, &models)?;
+    save_force_models(db, app_type, &models)?;
     Ok(models)
 }
 
@@ -254,6 +287,11 @@ pub fn delete_route(db: &Database, project_path: &str, app_type: &str) -> Result
     let path_key = normalize_project_path(project_path)
         .ok_or_else(|| AppError::InvalidInput("项目目录不能为空".to_string()))?;
     db.delete_project_provider_route(&path_key, app_type)
+}
+
+pub fn delete_routes_by_app_type(db: &Database, app_type: &str) -> Result<usize, AppError> {
+    force_model_options_setting_key(app_type)?;
+    db.delete_project_provider_routes_by_app_type(app_type)
 }
 
 pub fn resolve_route_override(
@@ -350,25 +388,54 @@ mod tests {
         assert_eq!(project.sessions[0].session_id, "claude-session");
     }
     #[test]
-    fn force_model_options_are_global_and_deduplicated() {
+    fn force_model_options_are_scoped_and_legacy_is_copied() {
         let db = Database::memory().expect("create memory db");
+        db.set_setting(
+            LEGACY_FORCE_MODEL_OPTIONS_SETTING_KEY,
+            r#"["legacy-model", "legacy-model"]"#,
+        )
+        .unwrap();
 
-        assert_eq!(list_force_models(&db).unwrap(), Vec::<String>::new());
         assert_eq!(
-            add_force_model(&db, " gpt-5 ").unwrap(),
+            list_force_models(&db, "codex").unwrap(),
+            vec!["legacy-model".to_string()]
+        );
+        assert_eq!(
+            add_force_model(&db, "codex", " gpt-5 ").unwrap(),
+            vec!["legacy-model".to_string(), "gpt-5".to_string()]
+        );
+        assert_eq!(
+            list_force_models(&db, "claude").unwrap(),
+            vec!["legacy-model".to_string()]
+        );
+        assert_eq!(
+            add_force_model(&db, "claude", "claude-sonnet").unwrap(),
+            vec!["legacy-model".to_string(), "claude-sonnet".to_string()]
+        );
+        assert_eq!(
+            delete_force_model(&db, "codex", "legacy-model").unwrap(),
             vec!["gpt-5".to_string()]
         );
         assert_eq!(
-            add_force_model(&db, "gpt-5").unwrap(),
-            vec!["gpt-5".to_string()]
+            list_force_models(&db, "claude").unwrap(),
+            vec!["legacy-model".to_string(), "claude-sonnet".to_string()]
         );
-        assert_eq!(
-            add_force_model(&db, "claude-sonnet").unwrap(),
-            vec!["gpt-5".to_string(), "claude-sonnet".to_string()]
-        );
-        assert_eq!(
-            delete_force_model(&db, "gpt-5").unwrap(),
-            vec!["claude-sonnet".to_string()]
-        );
+    }
+
+    #[test]
+    fn resets_only_routes_for_the_selected_client() {
+        let db = Database::memory().expect("create memory db");
+        upsert_route(&db, "C:/workspace/demo", "codex", "codex-provider").unwrap();
+        upsert_route(&db, "C:/workspace/demo", "claude", "claude-provider").unwrap();
+
+        assert_eq!(delete_routes_by_app_type(&db, "codex").unwrap(), 1);
+        assert!(db
+            .get_project_provider_route("c:/workspace/demo", "codex")
+            .unwrap()
+            .is_none());
+        assert!(db
+            .get_project_provider_route("c:/workspace/demo", "claude")
+            .unwrap()
+            .is_some());
     }
 }

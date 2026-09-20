@@ -8,6 +8,12 @@
 
 </div>
 
+<p align="center">
+  <a href="https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/CC%20Switch_3.20.3_x64-setup.exe"><strong>下载最新版 Windows x64 安装包</strong></a>
+  ·
+  <a href="https://github.com/xwyjh3612/cc-switch-ppbind/releases">查看全部版本</a>
+</p>
+
 > `ppbind` = **Project Provider Bind**。  
 > 本仓库基于 [farion1231/cc-switch](https://github.com/farion1231/cc-switch) 开发，保留原有供应商管理、代理接管、会话管理、MCP、Prompts、Skills 等能力，并重点增加按项目文件夹绑定上游渠道和强制指定最终模型的能力。  
 > 原版 README 已归档到 [`docs/original-readme`](docs/original-readme/)。
@@ -72,7 +78,7 @@ session_id / x-session-id
 - 项目可以选择“关闭强制路由模型”，恢复普通路由；
 - 新项目默认关闭；
 - 没有选择项目供应商时，不能开启强制模型；
-- 全局模型候选列表由所有项目共用；
+- Codex 和 Claude Code 各自维护一套模型候选列表，同一客户端内的项目共用；
 - 候选列表支持搜索过滤、新增和删除；
 - 只有输入内容没有匹配项时，才显示“新增此模型”操作；
 - 删除候选不会删除项目已经保存的模型值，避免运行中的项目被静默切换。
@@ -109,7 +115,7 @@ session_id / x-session-id
 1. 在 CC Switch 中配置好全局供应商。
 2. 为 Codex 或 Claude Code 开启 CC Switch 代理接管。
 3. 打开“项目管理”。
-4. 选择项目类型，再从项目卡片中选择供应商。
+4. 选择项目类型，再从项目卡片中选择供应商；如需清空当前类型的全部项目绑定，可点击“全部恢复默认”并二次确认。
 5. 如需固定最终模型，点击模型下拉框并选择模型。
 6. 选择模型后自动开启强制路由；选择第一项即可关闭。
 7. 没有配置项目绑定的请求继续使用全局默认供应商。
@@ -127,6 +133,9 @@ session_id / x-session-id
 
 ### 双击安装
 
+- [直接下载最新版 Windows x64 安装包](https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/CC%20Switch_3.20.3_x64-setup.exe)
+- [查看 GitHub Releases 中的全部版本](https://github.com/xwyjh3612/cc-switch-ppbind/releases)
+
 构建后的 Windows 安装包位于：
 
 ```text
@@ -140,10 +149,12 @@ release/CC Switch_3.20.3_x64-setup.exe
 ```powershell
 pnpm install
 pnpm build:release
+# 本地快速打包：只生成 NSIS 安装包，体积稍大，但后续增量构建快很多
+pnpm build:release-fast
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-local.ps1
 ```
 
-`build:release` 会把 NSIS/MSI 安装包和便携版复制到项目的 `release/` 目录。
+`build:release` 会把 NSIS/MSI 安装包和便携版复制到项目的 `release/` 目录。`build:release-fast` 使用独立的 `target-fast/` 缓存、关闭 LTO，并只构建 NSIS 安装包；产物同样复制到 `release/`，适合本地频繁验证。
 
 ## 开发
 

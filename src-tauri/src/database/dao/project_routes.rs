@@ -151,6 +151,18 @@ impl Database {
             .ok_or_else(|| AppError::Database("项目强制模型写入后读取失败".to_string()))
     }
 
+    pub fn delete_project_provider_routes_by_app_type(
+        &self,
+        app_type: &str,
+    ) -> Result<usize, AppError> {
+        let conn = lock_conn!(self.conn);
+        conn.execute(
+            "DELETE FROM project_provider_routes WHERE app_type = ?1",
+            params![app_type],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))
+    }
+
     pub fn delete_project_provider_route(
         &self,
         project_path_key: &str,

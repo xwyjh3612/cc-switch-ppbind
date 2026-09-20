@@ -92,24 +92,49 @@ pub fn clear_project_provider(
 }
 
 #[tauri::command]
-pub fn list_project_force_models(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    project_manager::list_force_models(&state.db).map_err(|e| e.to_string())
+pub fn reset_project_providers(
+    state: State<'_, AppState>,
+    appType: String,
+) -> Result<usize, String> {
+    if !matches!(appType.as_str(), "codex" | "claude") {
+        return Err(format!("不支持的项目客户端: {appType}"));
+    }
+    project_manager::delete_routes_by_app_type(&state.db, &appType).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_project_force_models(
+    state: State<'_, AppState>,
+    appType: String,
+) -> Result<Vec<String>, String> {
+    if !matches!(appType.as_str(), "codex" | "claude") {
+        return Err(format!("不支持的项目客户端: {appType}"));
+    }
+    project_manager::list_force_models(&state.db, &appType).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn add_project_force_model(
     state: State<'_, AppState>,
+    appType: String,
     model: String,
 ) -> Result<Vec<String>, String> {
-    project_manager::add_force_model(&state.db, &model).map_err(|e| e.to_string())
+    if !matches!(appType.as_str(), "codex" | "claude") {
+        return Err(format!("不支持的项目客户端: {appType}"));
+    }
+    project_manager::add_force_model(&state.db, &appType, &model).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn delete_project_force_model(
     state: State<'_, AppState>,
+    appType: String,
     model: String,
 ) -> Result<Vec<String>, String> {
-    project_manager::delete_force_model(&state.db, &model).map_err(|e| e.to_string())
+    if !matches!(appType.as_str(), "codex" | "claude") {
+        return Err(format!("不支持的项目客户端: {appType}"));
+    }
+    project_manager::delete_force_model(&state.db, &appType, &model).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

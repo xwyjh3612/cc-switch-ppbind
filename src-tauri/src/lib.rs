@@ -1621,6 +1621,7 @@ pub fn run() {
             commands::list_project_routes,
             commands::set_project_provider,
             commands::clear_project_provider,
+            commands::reset_project_providers,
             commands::list_project_force_models,
             commands::add_project_force_model,
             commands::delete_project_force_model,

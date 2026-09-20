@@ -40,14 +40,17 @@ export const projectsApi = {
   async clearProvider(projectPath: string, appType: string): Promise<boolean> {
     return await invoke("clear_project_provider", { projectPath, appType });
   },
-  async listForceModels(): Promise<string[]> {
-    return await invoke("list_project_force_models");
+  async resetProviders(appType: string): Promise<number> {
+    return await invoke("reset_project_providers", { appType });
   },
-  async addForceModel(model: string): Promise<string[]> {
-    return await invoke("add_project_force_model", { model });
+  async listForceModels(appType: string): Promise<string[]> {
+    return await invoke("list_project_force_models", { appType });
   },
-  async deleteForceModel(model: string): Promise<string[]> {
-    return await invoke("delete_project_force_model", { model });
+  async addForceModel(appType: string, model: string): Promise<string[]> {
+    return await invoke("add_project_force_model", { appType, model });
+  },
+  async deleteForceModel(appType: string, model: string): Promise<string[]> {
+    return await invoke("delete_project_force_model", { appType, model });
   },
   async setForceModel(options: {
     projectPath: string;
