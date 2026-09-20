@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type RefObject } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -33,6 +33,7 @@ const PROJECT_APPS: Array<{ id: AppId; label: string; icon: string }> = [
 ];
 
 interface ForceModelDropdownProps {
+  collisionBoundaryRef?: RefObject<HTMLElement | null>;
   value: string;
   enabled: boolean;
   models: string[];
@@ -52,6 +53,7 @@ function ForceModelDropdown({
   onSelect,
   onAdd,
   onDelete,
+  collisionBoundaryRef,
 }: ForceModelDropdownProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -161,6 +163,8 @@ function ForceModelDropdown({
         </div>
       </PopoverAnchor>
       <PopoverContent
+        collisionBoundary={collisionBoundaryRef?.current ?? undefined}
+        collisionPadding={8}
         align="end"
         className="w-[240px] overflow-hidden p-0"
         onInteractOutside={(event) => {
@@ -291,6 +295,7 @@ interface ProviderDropdownOption {
 }
 
 interface ProviderDropdownProps {
+  collisionBoundaryRef?: RefObject<HTMLElement | null>;
   value: string;
   missingProviderId?: string;
   options: ProviderDropdownOption[];
@@ -302,6 +307,7 @@ function ProviderDropdown({
   missingProviderId,
   options,
   onChange,
+  collisionBoundaryRef,
 }: ProviderDropdownProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -390,6 +396,8 @@ function ProviderDropdown({
         </div>
       </PopoverAnchor>
       <PopoverContent
+        collisionBoundary={collisionBoundaryRef?.current ?? undefined}
+        collisionPadding={8}
         align="end"
         className="w-[240px] overflow-hidden p-0"
         onInteractOutside={(event) => {
@@ -472,6 +480,7 @@ export function ProjectManagerPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [activeProjectApp, setActiveProjectApp] = useState<AppId>("codex");
+  const projectsScrollRef = useRef<HTMLDivElement>(null);
 
   const projects = useQuery({
     queryKey: ["projects"],
@@ -711,7 +720,10 @@ export function ProjectManagerPage() {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
+      <div
+        ref={projectsScrollRef}
+        className="min-h-0 flex-1 space-y-2 overflow-y-auto"
+      >
         {projects.isLoading && (
           <div className="rounded-xl border border-dashed p-10 text-center text-sm text-muted-foreground">
             {t("projectManager.loading", { defaultValue: "正在扫描项目..." })}
@@ -788,6 +800,7 @@ export function ProjectManagerPage() {
                 <div className="flex shrink-0 items-center gap-2">
                   <ProviderDropdown
                     value={providerId}
+                    collisionBoundaryRef={projectsScrollRef}
                     missingProviderId={
                       routeProviderMissing ? route?.providerId : undefined
                     }
@@ -813,6 +826,7 @@ export function ProjectManagerPage() {
                   >
                     <ForceModelDropdown
                       value={forceModel}
+                      collisionBoundaryRef={projectsScrollRef}
                       enabled={Boolean(route?.forceModelEnabled)}
                       models={forceModels.data ?? []}
                       selectionDisabled={!canUseRoute}
