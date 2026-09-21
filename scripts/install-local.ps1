@@ -9,7 +9,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $releaseDir = Join-Path $projectRoot 'release'
 
 if ([string]::IsNullOrWhiteSpace($InstallerPath)) {
-  $InstallerPath = Get-ChildItem -LiteralPath $releaseDir -File -Filter '*-setup.exe' |
+  $InstallerPath = Get-ChildItem -LiteralPath $releaseDir -File -Filter 'PPBind_*-setup.exe' |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1 -ExpandProperty FullName
 }
@@ -19,10 +19,10 @@ if ([string]::IsNullOrWhiteSpace($InstallerPath) -or -not (Test-Path -LiteralPat
 }
 
 $InstallerPath = (Resolve-Path -LiteralPath $InstallerPath).Path
-$installedExe = Join-Path $env:LOCALAPPDATA 'CC Switch\cc-switch.exe'
+$installedExe = Join-Path $env:LOCALAPPDATA 'PPBind\ppbind.exe'
 
-Write-Host "Stopping running CC Switch..."
-Get-Process -Name 'cc-switch' -ErrorAction SilentlyContinue |
+Write-Host "Stopping running PPBind..."
+Get-Process -Name 'ppbind' -ErrorAction SilentlyContinue |
   Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 800
 
@@ -37,8 +37,8 @@ if (-not $NoLaunch) {
     throw "Installed executable not found: $installedExe"
   }
 
-  Write-Host "Starting CC Switch..."
+  Write-Host "Starting PPBind..."
   Start-Process -FilePath $installedExe | Out-Null
 }
 
-Write-Host 'CC Switch update completed.'
+Write-Host 'PPBind update completed.'

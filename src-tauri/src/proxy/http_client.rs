@@ -5,42 +5,48 @@
 
 use once_cell::sync::OnceCell;
 use reqwest::Client;
+use std::collections::HashMap;
 use std::env;
 use std::net::IpAddr;
 use std::sync::RwLock;
 use std::time::Duration;
 
+use super::types::DEFAULT_PROXY_PORT;
+
 /// 全局 HTTP 客户端实例
 static GLOBAL_CLIENT: OnceCell<RwLock<Client>> = OnceCell::new();
+
+/// Provider 专属代理客户端缓存，按代理 URL 复用连接池。
+static PROVIDER_CLIENTS: OnceCell<RwLock<HashMap<String, Client>>> = OnceCell::new();
 
 /// 当前代理 URL（用于日志和状态查询）
 static CURRENT_PROXY_URL: OnceCell<RwLock<Option<String>>> = OnceCell::new();
 
-/// CC Switch 代理服务器当前监听的端口
-static CC_SWITCH_PROXY_PORT: OnceCell<RwLock<u16>> = OnceCell::new();
+/// PPBind 代理服务器当前监听的端口
+static PPBIND_PROXY_PORT: OnceCell<RwLock<u16>> = OnceCell::new();
 
-/// 设置 CC Switch 代理服务器的监听端口
+/// 设置 PPBind 代理服务器的监听端口
 ///
 /// 应在代理服务器启动时调用，以便系统代理检测能正确识别自己的端口
 pub fn set_proxy_port(port: u16) {
-    if let Some(lock) = CC_SWITCH_PROXY_PORT.get() {
+    if let Some(lock) = PPBIND_PROXY_PORT.get() {
         if let Ok(mut current_port) = lock.write() {
             *current_port = port;
-            log::debug!("[GlobalProxy] Updated CC Switch proxy port to {port}");
+            log::debug!("[GlobalProxy] Updated PPBind proxy port to {port}");
         }
     } else {
-        let _ = CC_SWITCH_PROXY_PORT.set(RwLock::new(port));
-        log::debug!("[GlobalProxy] Initialized CC Switch proxy port to {port}");
+        let _ = PPBIND_PROXY_PORT.set(RwLock::new(port));
+        log::debug!("[GlobalProxy] Initialized PPBind proxy port to {port}");
     }
 }
 
-/// 获取 CC Switch 代理服务器的监听端口
+/// 获取 PPBind 代理服务器的监听端口
 fn get_proxy_port() -> u16 {
-    CC_SWITCH_PROXY_PORT
+    PPBIND_PROXY_PORT
         .get()
         .and_then(|lock| lock.read().ok())
         .map(|port| *port)
-        .unwrap_or(15721) // 默认端口作为回退
+        .unwrap_or(DEFAULT_PROXY_PORT) // PPBind 默认端口作为回退
 }
 
 /// 初始化全局 HTTP 客户端
@@ -194,6 +200,31 @@ pub fn get() -> Client {
             log::warn!("[GlobalProxy] [GP-004] Client not initialized, using fallback");
             build_client(None).unwrap_or_default()
         })
+}
+
+/// 获取按 Provider 选择的 HTTP 客户端。
+///
+/// `proxy_url = None` 时复用全局客户端；指定 URL 时复用该 Provider 的独立连接池。
+pub fn get_for_proxy(proxy_url: Option<&str>) -> Result<Client, String> {
+    let Some(proxy_url) = proxy_url.map(str::trim).filter(|url| !url.is_empty()) else {
+        return Ok(get());
+    };
+
+    let cache = PROVIDER_CLIENTS.get_or_init(|| RwLock::new(HashMap::new()));
+    if let Ok(clients) = cache.read() {
+        if let Some(client) = clients.get(proxy_url) {
+            return Ok(client.clone());
+        }
+    }
+
+    let client = build_client(Some(proxy_url))?;
+    let mut clients = cache
+        .write()
+        .map_err(|_| "Provider proxy client cache lock poisoned".to_string())?;
+    Ok(clients
+        .entry(proxy_url.to_string())
+        .or_insert_with(|| client.clone())
+        .clone())
 }
 
 /// 获取当前代理 URL
@@ -409,13 +440,13 @@ mod tests {
 
     #[test]
     fn test_proxy_points_to_loopback() {
-        // 设置 CC Switch 代理端口为 15721（默认值）
-        set_proxy_port(15721);
+        // 设置 PPBind 代理端口为默认值
+        set_proxy_port(DEFAULT_PROXY_PORT);
 
         // 只有指向 CC Switch 自己端口的 loopback 地址才返回 true
-        assert!(proxy_points_to_loopback("http://127.0.0.1:15721"));
-        assert!(proxy_points_to_loopback("socks5://localhost:15721"));
-        assert!(proxy_points_to_loopback("127.0.0.1:15721"));
+        assert!(proxy_points_to_loopback("http://127.0.0.1:15722"));
+        assert!(proxy_points_to_loopback("socks5://localhost:15722"));
+        assert!(proxy_points_to_loopback("127.0.0.1:15722"));
 
         // 其他 loopback 端口不应该被跳过（允许使用其他本地代理工具）
         assert!(!proxy_points_to_loopback("http://127.0.0.1:7890"));
@@ -423,7 +454,7 @@ mod tests {
 
         // 非 loopback 地址不应该被跳过
         assert!(!proxy_points_to_loopback("http://192.168.1.10:7890"));
-        assert!(!proxy_points_to_loopback("http://192.168.1.10:15721"));
+        assert!(!proxy_points_to_loopback("http://192.168.1.10:15722"));
     }
 
     #[test]
@@ -431,7 +462,7 @@ mod tests {
         let _guard = env_lock().lock().unwrap();
 
         // 设置 CC Switch 代理端口
-        set_proxy_port(15721);
+        set_proxy_port(DEFAULT_PROXY_PORT);
 
         let keys = [
             "HTTP_PROXY",
@@ -447,7 +478,7 @@ mod tests {
         }
 
         // 指向 CC Switch 端口的代理应该被跳过
-        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:15721");
+        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:15722");
         assert!(system_proxy_points_to_loopback());
 
         // 指向其他端口的本地代理不应该被跳过

@@ -13,7 +13,7 @@ use crate::error::AppError;
 /// - `dirs::home_dir()` 在 Windows 上使用 `SHGetKnownFolderPath(FOLDERID_Profile)`，
 ///   返回的是真实用户目录（类似 `C:\\Users\\Alice`），与 v3.10.2 行为一致。
 /// - 不要直接使用 `HOME` 环境变量：它可能由 Git/Cygwin/MSYS 等第三方工具注入，
-///   且不一定等于用户目录，可能导致 `.cc-switch/cc-switch.db` 路径变化，从而“看起来像数据丢失”。
+///   且不一定等于用户目录，可能导致应用数据目录路径变化，从而“看起来像数据丢失”。
 ///
 /// ## 测试隔离
 ///
@@ -199,32 +199,44 @@ pub fn get_claude_settings_path() -> PathBuf {
     settings
 }
 
-/// 获取应用配置目录路径 (~/.cc-switch)
+/// PPBind 应用数据目录名
+pub const APP_CONFIG_DIR_NAME: &str = ".ppbind";
+/// 官方 CC Switch 数据目录名
+pub const LEGACY_APP_CONFIG_DIR_NAME: &str = ".cc-switch";
+/// PPBind 数据库文件名
+pub const APP_DB_FILENAME: &str = "ppbind.db";
+/// 官方 CC Switch 数据库文件名
+pub const LEGACY_APP_DB_FILENAME: &str = "cc-switch.db";
+
+/// 获取 PPBind 应用配置目录路径 (~/.ppbind)
 pub fn get_app_config_dir() -> PathBuf {
     if let Some(custom) = crate::app_store::get_app_config_dir_override() {
         return custom;
     }
 
-    let default_dir = get_home_dir().join(".cc-switch");
+    get_home_dir().join(APP_CONFIG_DIR_NAME)
+}
 
-    // 兼容 v3.10.3：当用户环境存在 `HOME` 且与真实用户目录不同，
-    // v3.10.3 可能在 `HOME/.cc-switch/` 下创建/使用了数据库。
-    // 这里仅在“默认位置没有数据库”时回退到旧位置，避免再次出现“供应商消失”问题，
-    // 同时也避免新安装因为 `HOME` 被设置而写入非预期路径。
+/// 获取 PPBind 数据库路径
+pub fn get_app_db_path() -> PathBuf {
+    get_app_config_dir().join(APP_DB_FILENAME)
+}
+
+/// 获取官方 CC Switch 配置目录路径 (~/.cc-switch)
+///
+/// 该路径只用于首次导入。PPBind 正常运行期间不会读取或写入它。
+pub fn get_legacy_app_config_dir() -> PathBuf {
+    let default_dir = get_home_dir().join(LEGACY_APP_CONFIG_DIR_NAME);
+
+    // 兼容曾受 HOME 环境变量影响的官方旧版本安装。
     #[cfg(windows)]
     {
-        let default_db = default_dir.join("cc-switch.db");
-        if !default_db.exists() {
+        if !default_dir.join(LEGACY_APP_DB_FILENAME).exists() {
             if let Ok(home_env) = std::env::var("HOME") {
                 let trimmed = home_env.trim();
                 if !trimmed.is_empty() {
-                    let legacy_dir = PathBuf::from(trimmed).join(".cc-switch");
-                    if legacy_dir.join("cc-switch.db").exists() {
-                        log::info!(
-                            "Detected v3.10.3 legacy database at {}, using it instead of {}",
-                            legacy_dir.display(),
-                            default_dir.display()
-                        );
+                    let legacy_dir = PathBuf::from(trimmed).join(LEGACY_APP_CONFIG_DIR_NAME);
+                    if legacy_dir.join(LEGACY_APP_DB_FILENAME).exists() {
                         return legacy_dir;
                     }
                 }
@@ -235,7 +247,12 @@ pub fn get_app_config_dir() -> PathBuf {
     default_dir
 }
 
-/// 获取应用配置文件路径
+/// 获取官方 CC Switch 数据库路径
+pub fn get_legacy_app_db_path() -> PathBuf {
+    get_legacy_app_config_dir().join(LEGACY_APP_DB_FILENAME)
+}
+
+/// 获取 PPBind 配置文件路径
 pub fn get_app_config_path() -> PathBuf {
     get_app_config_dir().join("config.json")
 }

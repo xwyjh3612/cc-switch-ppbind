@@ -1,7 +1,7 @@
 [package]
-name = "cc-switch"
+name = "ppbind"
 version = "3.20.3"
-description = "All-in-One Assistant for Claude Code, Codex & Gemini CLI"
+description = "PPBind: project-level provider binding and forced model routing for Codex and Claude Code"
 authors = ["Jason Young"]
 license = "MIT"
 repository = "https://github.com/xwyjh3612/cc-switch-ppbind"

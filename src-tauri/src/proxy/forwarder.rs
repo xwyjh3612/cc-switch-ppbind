@@ -2369,8 +2369,15 @@ impl RequestForwarder {
             self.non_streaming_timeout
         };
 
-        // 获取全局代理 URL
-        let upstream_proxy_url: Option<String> = super::http_client::get_current_proxy_url();
+        // Provider 可以覆盖全局上游代理；未配置时继续使用全局代理。
+        let provider_proxy_url = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.proxy_url.clone())
+            .map(|url| url.trim().to_string())
+            .filter(|url| !url.is_empty());
+        let upstream_proxy_url: Option<String> =
+            provider_proxy_url.or_else(super::http_client::get_current_proxy_url);
 
         // SOCKS5 代理不支持 CONNECT 隧道，需要用 reqwest
         let is_socks_proxy = upstream_proxy_url
@@ -2392,7 +2399,8 @@ impl RequestForwarder {
             log::debug!(
                 "[Forwarder] Using pooled reqwest client (preserve_exact_header_case={preserve_exact_header_case}, socks_proxy={is_socks_proxy})"
             );
-            let client = super::http_client::get();
+            let client = super::http_client::get_for_proxy(upstream_proxy_url.as_deref())
+                .map_err(ProxyError::ForwardFailed)?;
             let mut request = client.request(method.clone(), &url);
             if request_is_streaming {
                 // reqwest 的 timeout 是整请求超时；流式请求交给 response_processor

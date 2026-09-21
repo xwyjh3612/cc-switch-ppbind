@@ -2106,7 +2106,7 @@ requires_openai_auth = true
         let profile: Value = read_json_file(&profile_path).expect("read desktop profile");
         assert_eq!(
             profile["inferenceGatewayBaseUrl"],
-            json!("http://127.0.0.1:15721/claude-desktop"),
+            json!("http://127.0.0.1:15722/claude-desktop"),
             "desktop profile should stay pointed at the local gateway during takeover"
         );
         assert_eq!(profile["inferenceGatewayAuthScheme"], json!("bearer"));
@@ -6958,6 +6958,17 @@ impl ProviderService {
     }
 
     fn validate_provider_settings(app_type: &AppType, provider: &Provider) -> Result<(), AppError> {
+        if let Some(proxy_url) = provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.proxy_url.as_deref())
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
+            crate::proxy::http_client::validate_proxy(Some(proxy_url))
+                .map_err(AppError::InvalidInput)?;
+        }
+
         match app_type {
             AppType::Claude => {
                 if !provider.settings_config.is_object() {

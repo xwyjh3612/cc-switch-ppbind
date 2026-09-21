@@ -9,7 +9,7 @@
 </div>
 
 <p align="center">
-  <a href="https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/CC%20Switch_3.20.3_x64-setup.exe"><strong>下载最新版 Windows x64 安装包</strong></a>
+  <a href="https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/PPBind_3.20.3_x64-setup.exe"><strong>下载最新版 Windows x64 安装包</strong></a>
   ·
   <a href="https://github.com/xwyjh3612/cc-switch-ppbind/releases">查看全部版本</a>
 </p>
@@ -39,7 +39,14 @@
 - 项目卡片展示项目目录、最近使用的模型和当前项目供应商；
 - 项目页面不重复显示会话列表，保持路由配置简洁。
 
-### 2. 项目级供应商绑定
+### 2. Provider 独立上游代理
+
+- 每个 Provider 可以单独配置上游 HTTP/HTTPS/SOCKS5 代理；
+- 留空时跟随全局代理配置；
+- 代理配置只影响该 Provider 的上游请求，不改变其他 Provider；
+- Provider 级代理客户端会复用连接池，避免每次请求重新建立连接。
+
+### 3. 项目级供应商绑定
 
 - 每个项目可以单独选择上游供应商；
 - 第一项是“默认供应商”，表示继续使用 CC Switch 全局路由；
@@ -53,7 +60,7 @@
 项目级指定供应商 > 全局当前供应商 > 原有故障转移/默认逻辑
 ```
 
-### 3. Codex 会话识别
+### 4. Codex 会话识别
 
 Codex 请求会从请求头中的稳定会话 ID 识别会话，再通过本地会话元数据把会话映射到项目 `cwd`：
 
@@ -69,7 +76,7 @@ session_id / x-session-id
 
 会话 ID 到项目目录的查询支持缓存，避免每个请求都重复扫描 SQLite。首次请求尚未建立映射时，会先按全局路由处理。
 
-### 4. 强制路由模型
+### 5. 强制路由模型
 
 每个项目可以在指定供应商之后，再开启“强制路由模型”。
 
@@ -89,11 +96,11 @@ session_id / x-session-id
 项目强制模型 > 客户端请求模型 > 供应商模型映射/默认模型
 ```
 
-### 5. 最近模型
+### 6. 最近模型
 
 项目卡片会显示该项目最近一次实际使用的模型，便于快速确认路由是否符合预期。
 
-### 6. 下拉框体验
+### 7. 下拉框体验
 
 - 供应商和模型选择统一为紧凑型可搜索下拉框；
 - 无内边距，选项直接铺满；
@@ -102,7 +109,7 @@ session_id / x-session-id
 - 窗口较小时，下拉框不会超出顶部页头或窗口底部；
 - 空间不足时列表内部滚动，不会出现上方选项看不到、无法点击的问题。
 
-### 7. 更新保护
+### 8. 更新保护
 
 应用内的普通“检查更新”入口仍然保留，但不会连接官方更新源：
 
@@ -112,8 +119,8 @@ session_id / x-session-id
 
 ## 使用流程
 
-1. 在 CC Switch 中配置好全局供应商。
-2. 为 Codex 或 Claude Code 开启 CC Switch 代理接管。
+1. 在 PPBind 中配置好全局供应商（首次启动可按提示导入官方 CC Switch 数据）。
+2. 为 Codex 或 Claude Code 开启 PPBind 代理接管。
 3. 打开“项目管理”。
 4. 选择项目类型，再从项目卡片中选择供应商；如需清空当前类型的全部项目绑定，可点击“全部恢复默认”并二次确认。
 5. 如需固定最终模型，点击模型下拉框并选择模型。
@@ -133,16 +140,18 @@ session_id / x-session-id
 
 ### 双击安装
 
-- [直接下载最新版 Windows x64 安装包](https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/CC%20Switch_3.20.3_x64-setup.exe)
+- [直接下载最新版 Windows x64 安装包](https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/PPBind_3.20.3_x64-setup.exe)
 - [查看 GitHub Releases 中的全部版本](https://github.com/xwyjh3612/cc-switch-ppbind/releases)
 
 构建后的 Windows 安装包位于：
 
 ```text
-release/CC Switch_3.20.3_x64-setup.exe
+release/PPBind_3.20.3_x64-setup.exe
 ```
 
-双击安装包即可安装。应用显示名仍然保持 **CC Switch**，以保证原有安装目录和用户数据目录兼容。
+双击安装包即可安装，默认安装到 %LOCALAPPDATA%\PPBind。
+
+PPBind 与官方 CC Switch 使用不同进程名、安装目录、数据目录和 ppbind:// 协议，可以同时安装。首次启动时，PPBind 会询问是否只读复制官方 CC Switch 数据；复制过程不会修改原数据库。
 
 ### 本地构建并安装
 

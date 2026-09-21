@@ -12,7 +12,7 @@ use crate::error::AppError;
 use crate::provider::{ClaudeDesktopMode, Provider};
 
 pub const PROFILE_ID: &str = "00000000-0000-4000-8000-000000157210";
-pub const PROFILE_NAME: &str = "CC Switch";
+pub const PROFILE_NAME: &str = "PPBind";
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux", test))]
 const CONFIG_FILE: &str = "claude_desktop_config.json";
@@ -1416,7 +1416,7 @@ mod tests {
     #[test]
     fn linux_config_dir_uses_host_config_when_cc_switch_runs_in_flatpak() {
         let home = Path::new("/home/tester");
-        let private_xdg = Path::new("/home/tester/.var/app/com.ccswitch.desktop/config");
+        let private_xdg = Path::new("/home/tester/.var/app/com.ppbind.desktop/config");
 
         assert_eq!(
             linux_config_dir_from_home(home, Some(private_xdg), true),
@@ -1652,7 +1652,7 @@ mod tests {
         let profile: Value = read_json_file(&paths.profile_path).expect("read profile");
         assert_eq!(
             profile["inferenceGatewayBaseUrl"],
-            json!("http://127.0.0.1:15721/claude-desktop")
+            json!("http://127.0.0.1:15722/claude-desktop")
         );
         assert_eq!(profile["inferenceGatewayAuthScheme"], json!("bearer"));
         assert_eq!(profile["coworkEgressAllowedHosts"], json!(["*"]));
@@ -1686,7 +1686,7 @@ mod tests {
             let profile: Value = read_json_file(&paths.profile_path).expect("read profile");
             assert_eq!(
                 profile["inferenceGatewayBaseUrl"],
-                json!("http://127.0.0.1:15721/claude-desktop")
+                json!("http://127.0.0.1:15722/claude-desktop")
             );
             assert_eq!(
                 profile["inferenceModels"],

@@ -27,7 +27,7 @@ pub struct Provider {
     /// 备注信息
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
-    /// 供应商元数据（不写入 live 配置，仅存于 ~/.cc-switch/config.json）
+    /// 供应商元数据（不写入 live 配置，仅存于 ~/.ppbind/config.json）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<ProviderMeta>,
     /// 图标名称（如 "openai", "anthropic"）
@@ -442,6 +442,9 @@ impl LocalProxyRequestOverrides {
 /// 供应商元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProviderMeta {
+    /// Provider 专属上游 HTTP/SOCKS 代理；为空时跟随全局代理配置。
+    #[serde(rename = "proxyUrl", skip_serializing_if = "Option::is_none")]
+    pub proxy_url: Option<String>,
     /// 自定义端点列表（按 URL 去重存储）
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub custom_endpoints: HashMap<String, crate::settings::CustomEndpoint>,

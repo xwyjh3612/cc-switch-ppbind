@@ -2,9 +2,13 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $releaseDir = Join-Path $projectRoot 'release'
-$targetDir = Join-Path $projectRoot 'target'
+$targetDir = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+  Join-Path $projectRoot 'target'
+} else {
+  [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+}
 
-# Override machine-level CARGO_TARGET_DIR so Cargo work stays inside the project.
+# Respect an external CARGO_TARGET_DIR so build caches can live on a larger drive.
 $env:CARGO_TARGET_DIR = $targetDir
 
 $tauriArgs = @('tauri', 'build', '--bundles', 'nsis', 'msi')
@@ -22,17 +26,17 @@ $bundleRoot = Join-Path $targetDir 'release\bundle'
 
 $nsisDir = Join-Path $bundleRoot 'nsis'
 if (Test-Path -LiteralPath $nsisDir) {
-  Get-ChildItem -LiteralPath $nsisDir -File -Filter '*-setup.exe' | Copy-Item -Destination $releaseDir -Force
+  Get-ChildItem -LiteralPath $nsisDir -File -Filter 'PPBind_*-setup.exe' | Copy-Item -Destination $releaseDir -Force
 }
 
 $msiDir = Join-Path $bundleRoot 'msi'
 if (Test-Path -LiteralPath $msiDir) {
-  Get-ChildItem -LiteralPath $msiDir -File -Filter '*.msi' | Copy-Item -Destination $releaseDir -Force
+  Get-ChildItem -LiteralPath $msiDir -File -Filter 'PPBind_*.msi' | Copy-Item -Destination $releaseDir -Force
 }
 
-$portableExe = Join-Path $targetDir 'release\cc-switch.exe'
+$portableExe = Join-Path $targetDir 'release\ppbind.exe'
 if (Test-Path -LiteralPath $portableExe) {
-  Copy-Item -LiteralPath $portableExe -Destination (Join-Path $releaseDir 'cc-switch.exe') -Force
+  Copy-Item -LiteralPath $portableExe -Destination (Join-Path $releaseDir 'ppbind.exe') -Force
 }
 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'install-local.ps1') -Destination (Join-Path $releaseDir 'install-local.ps1') -Force

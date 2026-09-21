@@ -365,7 +365,7 @@ impl CodexAuthFileTransaction {
             .and_then(|name| name.to_str())
             .unwrap_or("auth.json");
         Ok(parent.join(format!(
-            ".{file_name}.cc-switch-{label}-{}",
+            ".{file_name}.ppbind-{label}-{}",
             uuid::Uuid::new_v4()
         )))
     }
@@ -3619,7 +3619,7 @@ impl ProxyService {
     }
 
     /// The login state Codex will observe for `config_text`, as far as
-    /// cc-switch can tell without touching the keyring: `Some(true)` signed
+    /// ppbind can tell without touching the keyring: `Some(true)` signed
     /// in, `Some(false)` signed out, `None` undecidable. Which store Codex
     /// reads is decided first (`cli_auth_credentials_store`), and
     /// `auth.json` is only opened for the one mode that reads it:
@@ -7719,7 +7719,7 @@ model = "gpt-5.1-codex"
             live.get("env")
                 .and_then(|env| env.get("ANTHROPIC_BASE_URL"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721"),
+            Some("http://127.0.0.1:15722"),
             "takeover proxy URL should remain active"
         );
         assert!(
@@ -8768,7 +8768,7 @@ requires_openai_auth = true
                 .and_then(|v| v.get("aihubmix"))
                 .and_then(|v| v.get("base_url"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721/v1"),
+            Some("http://127.0.0.1:15722/v1"),
             "taken-over live config should stay pointed at the local proxy"
         );
 
@@ -8910,7 +8910,7 @@ requires_openai_auth = true
                 .and_then(|v| v.get("deepseek"))
                 .and_then(|v| v.get("base_url"))
                 .and_then(|v| v.as_str()),
-            Some("http://127.0.0.1:15721/v1")
+            Some("http://127.0.0.1:15722/v1")
         );
         assert_eq!(
             parsed_live.get("model").and_then(|v| v.as_str()),
@@ -9499,7 +9499,7 @@ requires_openai_auth = true
         let db = Arc::new(Database::memory().expect("init db"));
         let service = ProxyService::new(db.clone());
 
-        // Pre-takeover Live state: config.toml points at the cc-switch generated
+        // Pre-takeover Live state: config.toml points at the ppbind generated
         // catalog file, and that file exists on disk (takeover never touches it).
         let catalog_path = crate::codex_config::get_codex_model_catalog_path();
         if let Some(parent) = catalog_path.parent() {
@@ -9544,7 +9544,7 @@ requires_openai_auth = true
         );
         assert!(
             restored.contains(pointer.as_str()),
-            "restored pointer must still reference the cc-switch generated catalog file"
+            "restored pointer must still reference the ppbind generated catalog file"
         );
     }
 
@@ -9607,7 +9607,7 @@ requires_openai_auth = true
         );
         assert!(
             catalog_path.exists(),
-            "restore must generate the cc-switch catalog file on disk"
+            "restore must generate the ppbind catalog file on disk"
         );
         let catalog: Value = serde_json::from_str(
             &std::fs::read_to_string(&catalog_path).expect("read generated catalog"),
@@ -9676,7 +9676,7 @@ requires_openai_auth = true
         );
         assert!(
             crate::codex_config::get_codex_model_catalog_path().exists(),
-            "empty-auth restore must generate the cc-switch catalog file"
+            "empty-auth restore must generate the ppbind catalog file"
         );
         assert!(
             !crate::codex_config::get_codex_auth_path().exists(),

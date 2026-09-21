@@ -176,6 +176,19 @@ impl ProxyResponse {
                 Ok(body)
             }
             response => {
+                // 能声明 Content-Length 的上游先在读取前拒绝超限响应，避免 reqwest
+                // 先缓冲一大块 body 才触发限制，也减少无谓的上游传输。
+                if let Some(content_length) = response
+                    .headers()
+                    .get(http::header::CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                {
+                    if content_length > max_bytes as u64 {
+                        return Err(ProxyError::ResponseBodyTooLarge(content_length as usize));
+                    }
+                }
+
                 // Hyper / Reqwest / Streamed 统一走逐块流式累积，超预算立即报错
                 let mut stream = response.bytes_stream();
                 let mut body = bytes::BytesMut::new();

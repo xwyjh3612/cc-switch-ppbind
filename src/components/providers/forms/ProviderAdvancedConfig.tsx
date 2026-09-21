@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useState, useEffect } from "react";
-import { ChevronDown, ChevronRight, Coins } from "lucide-react";
+import { ChevronDown, ChevronRight, Coins, Globe2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -23,11 +23,15 @@ interface ProviderPricingConfig {
 interface ProviderAdvancedConfigProps {
   pricingConfig: ProviderPricingConfig;
   onPricingConfigChange: (config: ProviderPricingConfig) => void;
+  proxyUrl: string;
+  onProxyUrlChange: (value: string) => void;
 }
 
 export function ProviderAdvancedConfig({
   pricingConfig,
   onPricingConfigChange,
+  proxyUrl,
+  onProxyUrlChange,
 }: ProviderAdvancedConfigProps) {
   const { t } = useTranslation();
   const [isPricingConfigOpen, setIsPricingConfigOpen] = useState(
@@ -40,6 +44,38 @@ export function ProviderAdvancedConfig({
 
   return (
     <div className="space-y-4">
+      {/* Provider 专属上游代理 */}
+      <div className="rounded-lg border border-border/50 bg-muted/20 p-4">
+        <div className="flex items-center gap-3">
+          <Globe2 className="h-4 w-4 text-muted-foreground" />
+          <span className="font-medium">
+            {t("providerAdvanced.proxyTitle", {
+              defaultValue: "供应商专属代理",
+            })}
+          </span>
+        </div>
+        <div className="mt-3 space-y-2">
+          <Label htmlFor="provider-proxy-url">
+            {t("providerAdvanced.proxyUrl", {
+              defaultValue: "上游代理地址",
+            })}
+          </Label>
+          <Input
+            id="provider-proxy-url"
+            value={proxyUrl}
+            onChange={(event) => onProxyUrlChange(event.target.value)}
+            placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+            autoComplete="off"
+          />
+          <p className="text-xs text-muted-foreground">
+            {t("providerAdvanced.proxyHint", {
+              defaultValue:
+                "仅影响该供应商的上游请求；留空时跟随全局代理配置。支持 HTTP、HTTPS、SOCKS5。",
+            })}
+          </p>
+        </div>
+      </div>
+
       {/* 计费配置 */}
       <div className="rounded-lg border border-border/50 bg-muted/20">
         <button
