@@ -444,22 +444,18 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
         : targetVersion
           ? `v${targetVersion}`
           : "";
+      const releaseUrl =
+        updateInfo?.releaseUrl ??
+        (displayVersion
+          ? `https://github.com/xwyjh3612/cc-switch-ppbind/releases/tag/${displayVersion}`
+          : "https://github.com/xwyjh3612/cc-switch-ppbind/releases");
 
-      if (!displayVersion) {
-        await settingsApi.openExternal(
-          "https://github.com/farion1231/cc-switch/releases",
-        );
-        return;
-      }
-
-      await settingsApi.openExternal(
-        `https://github.com/farion1231/cc-switch/releases/tag/${displayVersion}`,
-      );
+      await settingsApi.openExternal(releaseUrl);
     } catch (error) {
       console.error("[AboutSection] Failed to open release notes", error);
       toast.error(t("settings.openReleaseNotesFailed"));
     }
-  }, [t, updateInfo?.availableVersion, version]);
+  }, [t, updateInfo?.availableVersion, updateInfo?.releaseUrl, version]);
 
   const handleCheckUpdate = useCallback(async () => {
     if (hasUpdate) {
@@ -875,9 +871,9 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           <div className="flex items-center gap-8">
             <div className="flex flex-col items-center gap-2">
               <div className="flex items-center gap-2">
-                <img src={appIcon} alt="CC Switch" className="h-5 w-5" />
+                <img src={appIcon} alt="PPBind" className="h-5 w-5" />
                 <h4 className="text-lg font-semibold text-foreground">
-                  CC Switch
+                  PPBind
                 </h4>
               </div>
               <div className="flex items-center gap-2">
@@ -918,7 +914,7 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
               size="sm"
               onClick={() =>
                 settingsApi.openExternal(
-                  "https://github.com/farion1231/cc-switch",
+                  "https://github.com/xwyjh3612/cc-switch-ppbind",
                 )
               }
               className="h-8 gap-1.5 text-xs"

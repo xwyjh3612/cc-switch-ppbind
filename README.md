@@ -109,13 +109,17 @@ session_id / x-session-id
 - 窗口较小时，下拉框不会超出顶部页头或窗口底部；
 - 空间不足时列表内部滚动，不会出现上方选项看不到、无法点击的问题。
 
-### 8. 更新保护
+### 8. 独立更新
 
-应用内的普通“检查更新”入口仍然保留，但不会连接官方更新源：
+应用内“检查更新”已切换为 PPBind 自己的 GitHub Releases 更新链路，不再检查官方 CC Switch 更新源：
 
-- 点击后直接提示“已是最新版本”；
-- 避免官方安装包覆盖本地定制功能；
-- 更新界面和后续恢复逻辑保留，便于上游同步。
+- 启动后自动检查，也可在“关于”页手动检查；
+- 有新版本时展示 PPBind Release Notes 和下载入口；
+- Windows 下载 NSIS 安装包，校验 GitHub 提供的 SHA-256 后静默安装并自动重启；
+- 安装过程只结束 `ppbind.exe`，不会结束官方 `cc-switch.exe`；
+- 便携版点击更新会打开 PPBind Releases 页面。
+
+发布仓库需要保持公开；如果仅自己使用 private Release，可通过环境变量 `PPBIND_GITHUB_TOKEN` 或 `GITHUB_TOKEN` 提供只读访问 Token。不要在安装包内硬编码 Token。
 
 ## 使用流程
 

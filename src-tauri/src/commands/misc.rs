@@ -50,9 +50,16 @@ pub async fn copy_text_to_clipboard(text: String) -> Result<bool, String> {
     .map_err(|e| format!("剪贴板任务执行失败: {e}"))?
 }
 
-/// 自定义构建：保留更新入口，但不再打开官方发布页。
+/// 打开 PPBind 自己的 Release 页面，供便携版或自动下载失败时使用。
 #[tauri::command]
-pub async fn check_for_updates(_handle: AppHandle) -> Result<bool, String> {
+pub async fn check_for_updates(handle: AppHandle) -> Result<bool, String> {
+    handle
+        .opener()
+        .open_url(
+            "https://github.com/xwyjh3612/cc-switch-ppbind/releases",
+            None::<String>,
+        )
+        .map_err(|e| format!("打开 PPBind 发布页失败: {e}"))?;
     Ok(true)
 }
 
