@@ -119,7 +119,7 @@ session_id / x-session-id
 - 安装过程只结束 `ppbind.exe`，不会结束官方 `cc-switch.exe`；
 - 便携版点击更新会打开 PPBind Releases 页面。
 
-发布仓库需要保持公开；如果仅自己使用 private Release，可通过环境变量 `PPBIND_GITHUB_TOKEN` 或 `GITHUB_TOKEN` 提供只读访问 Token。不要在安装包内硬编码 Token。
+发布仓库需要保持公开。更新检查直接读取 GitHub Release 页面和 `SHA256SUMS.txt`，不调用有匿名频率限制的 GitHub API，也不会在安装包内保存任何 Token。
 
 ## 使用流程
 

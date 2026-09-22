@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -13,19 +13,15 @@ const PPBIND_REPO: &str = "xwyjh3612/cc-switch-ppbind";
 const PPBIND_RELEASES_URL: &str = "https://github.com/xwyjh3612/cc-switch-ppbind/releases";
 const PPBIND_UPDATE_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 struct GithubReleaseAsset {
     name: String,
     browser_download_url: String,
-    digest: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 struct GithubRelease {
     tag_name: String,
-    body: Option<String>,
-    published_at: Option<String>,
-    html_url: Option<String>,
     assets: Vec<GithubReleaseAsset>,
 }
 
@@ -48,60 +44,119 @@ struct UpdateDownloadProgress {
     total: Option<u64>,
 }
 
-fn ppbind_github_token() -> Option<String> {
-    ["PPBIND_GITHUB_TOKEN", "GITHUB_TOKEN"]
-        .iter()
-        .find_map(|key| std::env::var(key).ok())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+fn build_update_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(PPBIND_UPDATE_TIMEOUT)
+        .build()
+        .map_err(|e| format!("初始化更新客户端失败: {e}"))
 }
 
-fn configure_github_request(
-    request: reqwest::RequestBuilder,
-    include_auth: bool,
-) -> reqwest::RequestBuilder {
-    let request = request
+async fn fetch_github_text(client: &reqwest::Client, url: &str) -> Result<String, String> {
+    let response = client
+        .get(url)
         .header("User-Agent", "PPBind")
-        .header("Accept", "application/vnd.github+json");
-    if include_auth {
-        if let Some(token) = ppbind_github_token() {
-            return request.bearer_auth(token);
-        }
+        .send()
+        .await
+        .map_err(|e| format!("连接 GitHub 检查 PPBind 更新失败: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("检查 PPBind 更新失败（HTTP {status}）"));
     }
-    request
+    response
+        .text()
+        .await
+        .map_err(|e| format!("读取 PPBind 更新信息失败: {e}"))
+}
+
+fn parse_latest_release_tag(url: &reqwest::Url) -> Option<String> {
+    let segments = url.path_segments()?.collect::<Vec<_>>();
+    let tag_index = segments.iter().position(|segment| *segment == "tag")?;
+    segments
+        .get(tag_index + 1)
+        .map(|tag| (*tag).to_string())
+        .filter(|tag| !tag.is_empty())
+}
+
+fn parse_release_assets(html: &str, release_tag: &str) -> Vec<GithubReleaseAsset> {
+    let pattern = regex::Regex::new(r#"href="([^"]*/releases/download/([^"/]+)/([^"/]+))""#)
+        .expect("valid release asset regex");
+    let mut seen = std::collections::HashSet::new();
+    pattern
+        .captures_iter(html)
+        .filter_map(|captures| {
+            let href = captures.get(1)?.as_str();
+            let tag = captures.get(2)?.as_str();
+            let name = captures.get(3)?.as_str().to_string();
+            if tag != release_tag || !seen.insert(name.clone()) {
+                return None;
+            }
+            let browser_download_url =
+                if href.starts_with("http://") || href.starts_with("https://") {
+                    href.to_string()
+                } else {
+                    format!("https://github.com{href}")
+                };
+            Some(GithubReleaseAsset {
+                name,
+                browser_download_url,
+            })
+        })
+        .collect()
+}
+
+fn parse_sha256_sums(text: &str, asset_name: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let digest = parts.next()?.trim();
+        let name = parts.next()?.trim_start_matches('*');
+        if name != asset_name
+            || digest.len() != 64
+            || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        Some(digest.to_ascii_lowercase())
+    })
 }
 
 async fn fetch_ppbind_latest_release() -> Result<GithubRelease, String> {
-    let client = reqwest::Client::builder()
-        .timeout(PPBIND_UPDATE_TIMEOUT)
-        .build()
-        .map_err(|e| format!("初始化更新客户端失败: {e}"))?;
-    let response = configure_github_request(
-        client.get(format!(
-            "https://api.github.com/repos/{PPBIND_REPO}/releases/latest"
-        )),
-        true,
-    )
-    .send()
-    .await
-    .map_err(|e| format!("连接 GitHub 检查 PPBind 更新失败: {e}"))?;
-
+    let client = build_update_client()?;
+    let latest_url = format!("{PPBIND_RELEASES_URL}/latest");
+    let response = client
+        .get(&latest_url)
+        .header("User-Agent", "PPBind")
+        .send()
+        .await
+        .map_err(|e| format!("连接 GitHub 检查 PPBind 更新失败: {e}"))?;
     let status = response.status();
     if !status.is_success() {
-        let hint = if status == reqwest::StatusCode::NOT_FOUND {
-            "。请确认 PPBind Release 仓库已公开发布；自用构建也可设置 PPBIND_GITHUB_TOKEN 访问 private Release"
-        } else {
-            ""
-        };
-        return Err(format!("检查 PPBind 更新失败（HTTP {status}）{hint}"));
+        return Err(format!("检查 PPBind 更新失败（HTTP {status}）"));
+    }
+    let release_tag = parse_latest_release_tag(response.url())
+        .ok_or_else(|| "无法从 GitHub Release 地址解析版本号".to_string())?;
+
+    let assets_url = format!("{PPBIND_RELEASES_URL}/expanded_assets/{release_tag}");
+    let assets_html = fetch_github_text(&client, &assets_url).await?;
+    let assets = parse_release_assets(&assets_html, &release_tag);
+    if assets.is_empty() {
+        return Err(format!("PPBind {release_tag} 没有可用的 Release 文件"));
     }
 
-    response
-        .json::<GithubRelease>()
-        .await
-        .map_err(|e| format!("解析 PPBind 更新信息失败: {e}"))
+    Ok(GithubRelease {
+        tag_name: release_tag,
+        assets,
+    })
 }
 
+async fn fetch_release_sha256(release_tag: &str, asset_name: &str) -> Result<String, String> {
+    let client = build_update_client()?;
+    let checksum_url =
+        format!("https://github.com/{PPBIND_REPO}/releases/download/{release_tag}/SHA256SUMS.txt");
+    let checksum_text = fetch_github_text(&client, &checksum_url).await?;
+    parse_sha256_sums(&checksum_text, asset_name).ok_or_else(|| {
+        format!("PPBind {release_tag} 的 SHA256SUMS.txt 中缺少 {asset_name} 的校验值")
+    })
+}
 fn parse_version(value: &str) -> Option<(u64, u64, u64, Option<String>)> {
     let value = value.trim().trim_start_matches(['v', 'V']);
     let (core, prerelease) = match value.split_once('-') {
@@ -244,23 +299,18 @@ async fn resolve_ppbind_update() -> Result<Option<PpbindUpdateInfo>, String> {
             std::env::consts::OS
         )
     })?;
-    let sha256 = asset
-        .digest
-        .as_deref()
-        .and_then(|digest| digest.strip_prefix("sha256:"))
-        .map(str::to_ascii_lowercase);
+    let sha256 = fetch_release_sha256(&release.tag_name, &asset.name).await?;
+    let release_tag = release.tag_name.clone();
 
     Ok(Some(PpbindUpdateInfo {
         current_version: current_version.to_string(),
-        available_version: release.tag_name.trim_start_matches(['v', 'V']).to_string(),
-        notes: release.body.filter(|notes| !notes.trim().is_empty()),
-        pub_date: release.published_at,
-        release_url: release
-            .html_url
-            .unwrap_or_else(|| PPBIND_RELEASES_URL.to_string()),
+        available_version: release_tag.trim_start_matches(['v', 'V']).to_string(),
+        notes: None,
+        pub_date: None,
+        release_url: format!("{PPBIND_RELEASES_URL}/tag/{release_tag}"),
         download_url: asset.browser_download_url.clone(),
         asset_name: asset.name.clone(),
-        sha256,
+        sha256: Some(sha256),
     }))
 }
 
@@ -471,7 +521,10 @@ async fn download_ppbind_update(
         .timeout(Duration::from_secs(300))
         .build()
         .map_err(|e| format!("初始化下载客户端失败: {e}"))?;
-    let response = configure_github_request(client.get(&info.download_url), true)
+    let response = client
+        .get(&info.download_url)
+        .header("User-Agent", "PPBind")
+        .header("Accept", "application/octet-stream")
         .send()
         .await
         .map_err(|e| format!("下载 PPBind {} 失败: {e}", info.available_version))?;
@@ -1029,7 +1082,10 @@ pub async fn set_log_config(
 
 #[cfg(test)]
 mod ppbind_update_tests {
-    use super::{compare_versions, select_update_asset, GithubReleaseAsset};
+    use super::{
+        compare_versions, parse_release_assets, parse_sha256_sums, select_update_asset,
+        GithubReleaseAsset,
+    };
     use std::cmp::Ordering;
 
     #[test]
@@ -1052,16 +1108,40 @@ mod ppbind_update_tests {
             GithubReleaseAsset {
                 name: "ppbind.exe".to_string(),
                 browser_download_url: "https://example.com/ppbind.exe".to_string(),
-                digest: None,
             },
             GithubReleaseAsset {
                 name: "PPBind_3.20.4_x64-setup.exe".to_string(),
                 browser_download_url: "https://example.com/setup.exe".to_string(),
-                digest: Some("sha256:abc".to_string()),
             },
         ];
 
         let selected = select_update_asset(&assets).expect("asset");
         assert_eq!(selected.name, "PPBind_3.20.4_x64-setup.exe");
+    }
+
+    #[test]
+    fn release_assets_are_parsed_without_github_api() {
+        let html = r#"
+            <a href="/xwyjh3612/cc-switch-ppbind/releases/download/v3.20.4/PPBind_3.20.4_x64-setup.exe">setup</a>
+            <a href="/xwyjh3612/cc-switch-ppbind/releases/download/v3.20.4/SHA256SUMS.txt">sums</a>
+            <a href="/xwyjh3612/cc-switch-ppbind/releases/download/v3.20.3/old.exe">old</a>
+        "#;
+        let assets = parse_release_assets(html, "v3.20.4");
+        assert_eq!(assets.len(), 2);
+        assert_eq!(assets[0].name, "PPBind_3.20.4_x64-setup.exe");
+        assert!(assets[0]
+            .browser_download_url
+            .starts_with("https://github.com/"));
+    }
+
+    #[test]
+    fn sha256sums_are_parsed_for_selected_asset() {
+        let sums = "\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  other.exe\n\
+7aa2942ff24047654499dcd711d76ccabaac7308a1cc43ff55dd6fb64ef58f71  PPBind_3.20.4_x64-setup.exe\n";
+        assert_eq!(
+            parse_sha256_sums(sums, "PPBind_3.20.4_x64-setup.exe").as_deref(),
+            Some("7aa2942ff24047654499dcd711d76ccabaac7308a1cc43ff55dd6fb64ef58f71")
+        );
     }
 }
