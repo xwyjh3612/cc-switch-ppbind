@@ -39,6 +39,12 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      - name: Ensure macOS Rust targets
+        run: |
+          rustup target add aarch64-apple-darwin
+          rustup target add x86_64-apple-darwin
+          rustup target list --installed
+
       - name: Setup pnpm
         env:
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
@@ -143,3 +149,4 @@ jobs:
           rm -f \
             release-macos/SHA256SUMS-existing.txt \
             release-macos/SHA256SUMS-macos.txt
+
