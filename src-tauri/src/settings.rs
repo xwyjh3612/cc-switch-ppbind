@@ -776,6 +776,20 @@ pub fn get_settings_for_frontend() -> AppSettings {
     settings
 }
 
+/// Re-read settings from disk and replace the process-wide cache.
+///
+/// First-run legacy import writes `settings.json` after the webview may have
+/// already queried settings. Reloading here prevents the default in-memory
+/// snapshot from later overwriting the imported file.
+pub fn reload_settings_from_file() {
+    let loaded = AppSettings::load_from_file();
+    let mut guard = settings_store().write().unwrap_or_else(|e| {
+        log::warn!("设置锁已毒化，使用恢复值: {e}");
+        e.into_inner()
+    });
+    *guard = loaded;
+}
+
 pub fn update_settings(mut new_settings: AppSettings) -> Result<(), AppError> {
     new_settings.normalize_paths();
     save_settings_file(&new_settings)?;

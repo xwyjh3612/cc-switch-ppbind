@@ -133,11 +133,19 @@ impl RequestContext {
             session_result.client_provided
         );
 
+        // New Codex clients send workspace roots in this header. Prefer those
+        // over session-history lookup so first-turn project routing is immediate.
+        let workspace_paths = crate::proxy::session::extract_codex_workspace_paths(headers);
+
         // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）。
         // 会话/项目覆盖只影响本次请求，不修改全局 current provider。
-        let route_override =
-            crate::project_manager::resolve_route_override(&state.db, app_type_str, &session_id)
-                .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
+        let route_override = crate::project_manager::resolve_route_override_with_workspaces(
+            &state.db,
+            app_type_str,
+            &session_id,
+            &workspace_paths,
+        )
+        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
         let route_override_active = route_override.is_some();
         let force_model = route_override
             .as_ref()

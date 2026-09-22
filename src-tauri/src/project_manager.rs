@@ -369,10 +369,22 @@ pub fn delete_routes_by_app_type(db: &Database, app_type: &str) -> Result<usize,
     db.delete_project_provider_routes_by_app_type(app_type)
 }
 
+#[cfg(test)]
 pub fn resolve_route_override(
     db: &Database,
     app_type: &str,
     session_id: &str,
+) -> Result<Option<RouteOverride>, AppError> {
+    resolve_route_override_with_workspaces(db, app_type, session_id, &[])
+}
+
+/// Resolve session/project routing using fresh workspace roots from the request
+/// before falling back to local session-history discovery.
+pub fn resolve_route_override_with_workspaces(
+    db: &Database,
+    app_type: &str,
+    session_id: &str,
+    workspace_paths: &[String],
 ) -> Result<Option<RouteOverride>, AppError> {
     if !matches!(app_type, "codex" | "claude") {
         return Ok(None);
@@ -407,13 +419,20 @@ pub fn resolve_route_override(
     // missing part from the project route, then let the caller fall back to the
     // global/provider default for whatever remains absent.
     if provider_id.is_none() || force_model.is_none() {
-        let path_key = session_project_path_key.or_else(|| {
+        let path_key = if session_project_path_key.is_some() {
+            session_project_path_key
+        } else if let Some(path_key) =
+            find_project_path_for_workspaces(db, app_type, workspace_paths)?
+        {
+            Some(path_key)
+        } else {
             lookup_session_project_dir(app_type, &session_id)
                 .and_then(|project_dir| normalize_project_path(&project_dir))
-        });
-        if let Some(path_key) = path_key {
+        };
+
+        if let Some(path_key) = path_key.as_deref() {
             if let Some(route) = db
-                .get_project_provider_route(&path_key, app_type)?
+                .get_project_provider_route(path_key, app_type)?
                 .filter(|route| route.enabled)
             {
                 if provider_id.is_none()
@@ -443,6 +462,52 @@ pub fn resolve_route_override(
         provider_id,
         force_model,
     }))
+}
+
+fn find_project_path_for_workspaces(
+    db: &Database,
+    app_type: &str,
+    workspace_paths: &[String],
+) -> Result<Option<String>, AppError> {
+    if workspace_paths.is_empty() {
+        return Ok(None);
+    }
+
+    let routes = db.list_project_provider_routes()?;
+    let mut best_match: Option<(usize, String)> = None;
+
+    for workspace_path in workspace_paths {
+        let Some(workspace_key) = normalize_project_path(workspace_path) else {
+            continue;
+        };
+
+        for route in routes
+            .iter()
+            .filter(|route| route.enabled && route.app_type == app_type)
+        {
+            let route_key = route.project_path_key.trim_end_matches('/');
+            if route_key.is_empty() {
+                continue;
+            }
+
+            let is_match = workspace_key == route_key
+                || workspace_key
+                    .strip_prefix(route_key)
+                    .is_some_and(|suffix| suffix.starts_with('/'));
+            if !is_match {
+                continue;
+            }
+
+            let is_better = best_match
+                .as_ref()
+                .map_or(true, |(best_len, _)| route_key.len() > *best_len);
+            if is_better {
+                best_match = Some((route_key.len(), route.project_path_key.clone()));
+            }
+        }
+    }
+
+    Ok(best_match.map(|(_, path_key)| path_key))
 }
 
 #[cfg(test)]
@@ -677,6 +742,44 @@ mod tests {
 
         assert_eq!(resolved.provider_id.as_deref(), Some("project-provider"));
         assert_eq!(resolved.force_model.as_deref(), Some("gpt-5.6"));
+    }
+
+    #[test]
+    fn workspace_path_resolves_project_route_without_history_lookup() {
+        use crate::provider::Provider;
+
+        let db = Database::memory().expect("create memory db");
+        db.save_provider(
+            "codex",
+            &Provider::with_id(
+                "project-provider".to_string(),
+                "Project Provider".to_string(),
+                serde_json::json!({}),
+                None,
+            ),
+        )
+        .unwrap();
+
+        let workspace = std::env::current_dir()
+            .unwrap()
+            .join("workspace-route-test")
+            .join("subdir");
+        let workspace_text = workspace.to_string_lossy().to_string();
+        let project_root = workspace.parent().unwrap().to_string_lossy().to_string();
+        upsert_route(&db, &project_root, "codex", "project-provider").unwrap();
+        set_force_model(&db, &project_root, "codex", true, Some("deepseek-v4-flash")).unwrap();
+
+        let resolved = resolve_route_override_with_workspaces(
+            &db,
+            "codex",
+            "codex_brand-new-session",
+            &[workspace_text],
+        )
+        .unwrap()
+        .expect("workspace path should resolve project route");
+
+        assert_eq!(resolved.provider_id.as_deref(), Some("project-provider"));
+        assert_eq!(resolved.force_model.as_deref(), Some("deepseek-v4-flash"));
     }
 
     #[test]

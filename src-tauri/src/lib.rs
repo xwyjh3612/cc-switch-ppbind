@@ -78,6 +78,17 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt, sync::Arc};
+
+#[cfg(target_os = "windows")]
+static STARTUP_PAGE_LOADED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static STARTUP_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static STARTUP_WINDOW_SHOWN: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static STARTUP_FRONTEND_RELOAD_REQUIRED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static STARTUP_FRONTEND_RELOAD_STARTED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 use tauri::image::Image;
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
@@ -392,16 +403,50 @@ pub fn run() {
 
     #[cfg(target_os = "windows")]
     {
-        let startup_page_handled = AtomicBool::new(false);
         builder = builder.on_page_load(move |webview, payload| {
-            if webview.label() == "main"
-                && payload.event() == tauri::webview::PageLoadEvent::Finished
-                && payload.url().scheme() != "about"
-                && !startup_page_handled.swap(true, Ordering::Relaxed)
+            if webview.label() != "main"
+                || payload.event() != tauri::webview::PageLoadEvent::Finished
+                || payload.url().scheme() == "about"
+            {
+                return;
+            }
+
+            STARTUP_PAGE_LOADED.store(true, Ordering::SeqCst);
+
+            if STARTUP_FRONTEND_RELOAD_REQUIRED.load(Ordering::SeqCst) {
+                if !STARTUP_FRONTEND_RELOAD_STARTED.swap(true, Ordering::SeqCst) {
+                    match webview.eval("window.location.reload();") {
+                        Ok(()) => {
+                            log::info!("首次导入完成，正在刷新前端以加载导入的数据");
+                            return;
+                        }
+                        Err(error) => {
+                            STARTUP_FRONTEND_RELOAD_STARTED.store(false, Ordering::SeqCst);
+                            STARTUP_FRONTEND_RELOAD_REQUIRED.store(false, Ordering::SeqCst);
+                            log::warn!("首次导入后刷新前端失败，将直接显示当前页面: {error}");
+                        }
+                    }
+                } else {
+                    // This is the page-load event produced by the reload above.
+                    STARTUP_FRONTEND_RELOAD_REQUIRED.store(false, Ordering::SeqCst);
+                    STARTUP_FRONTEND_RELOAD_STARTED.store(false, Ordering::SeqCst);
+                    log::info!("前端刷新完成，导入的数据已可加载");
+                }
+            }
+
+            // setup() may still be importing the official database or
+            // initializing managed state. Showing the main window here
+            // would cover the native import progress dialog and make a
+            // healthy import look stalled.
+            if STARTUP_READY.load(Ordering::SeqCst)
                 && !crate::settings::get_settings().silent_startup
+                && !STARTUP_WINDOW_SHOWN.swap(true, Ordering::SeqCst)
             {
                 let _ = webview.window().show();
-                log::info!("主页面加载完成，主窗口已显示");
+                let _ = webview.window().set_focus();
+                log::info!("主页面加载完成且后端就绪，主窗口已显示");
+            } else if !STARTUP_READY.load(Ordering::SeqCst) {
+                log::info!("主页面已加载，等待首次启动数据处理完成后再显示主窗口");
             }
         });
     }
@@ -462,7 +507,22 @@ pub fn run() {
 
             // 首次启动导入官方 CC Switch 数据。必须在日志/数据库初始化前执行，
             // 并且只复制数据，绝不修改官方数据目录。
-            legacy_import::run_if_needed(app.handle())?;
+            let imported_legacy_data = legacy_import::run_if_needed(app.handle())?;
+            if imported_legacy_data {
+                // The webview can query settings while setup() is importing.
+                // Replace that default snapshot with the settings file that was
+                // just copied, before any later settings mutation can persist
+                // the stale in-memory defaults over it.
+                crate::settings::reload_settings_from_file();
+                log::info!("首次导入完成，设置缓存已从导入文件重新加载");
+
+                #[cfg(target_os = "windows")]
+                {
+                    // Reload the frontend once after the import so the first
+                    // visible page reads the freshly imported database.
+                    STARTUP_FRONTEND_RELOAD_REQUIRED.store(true, Ordering::SeqCst);
+                }
+            }
             panic_hook::init_app_config_dir(crate::config::get_app_config_dir());
 
             // 初始化日志（输出到 <app_config_dir>/logs/cc-switch.log）
@@ -1343,9 +1403,46 @@ pub fn run() {
                 }
             }
 
+            // setup() 已进入最后阶段：导入和所有后端托管状态均已完成，
+            // 允许 Windows 端显示主窗口。网页若已提前加载完成，这里立即显示；
+            // 否则后续 on_page_load 回调会看到 READY 并完成显示。
+            #[cfg(target_os = "windows")]
+            STARTUP_READY.store(true, Ordering::SeqCst);
+
             // 静默启动：根据设置决定是否显示主窗口
             let settings = crate::settings::get_settings();
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(target_os = "windows")]
+                let mut startup_frontend_reload_in_progress = false;
+
+                // If the page loaded before setup() finished, no PageLoad
+                // callback remains to trigger the post-import reload. Start
+                // it here and keep the window hidden until the reloaded page
+                // reports Finished.
+                #[cfg(target_os = "windows")]
+                if STARTUP_FRONTEND_RELOAD_REQUIRED.load(Ordering::SeqCst)
+                    && STARTUP_PAGE_LOADED.load(Ordering::SeqCst)
+                {
+                    if !STARTUP_FRONTEND_RELOAD_STARTED.swap(true, Ordering::SeqCst) {
+                        match window.eval("window.location.reload();") {
+                            Ok(()) => {
+                                startup_frontend_reload_in_progress = true;
+                                log::info!(
+                                    "首次导入完成且页面已提前加载，正在刷新前端"
+                                );
+                            }
+                            Err(error) => {
+                                STARTUP_FRONTEND_RELOAD_STARTED.store(false, Ordering::SeqCst);
+                                STARTUP_FRONTEND_RELOAD_REQUIRED.store(false, Ordering::SeqCst);
+                                log::warn!(
+                                    "首次导入后刷新前端失败，将直接显示当前页面: {error}"
+                                );
+                            }
+                        }
+                    } else {
+                        startup_frontend_reload_in_progress = true;
+                    }
+                }
                 // 在窗口首次显示前同步装饰状态，避免前端加载后再切换导致标题栏闪烁
                 // 仅 Linux 生效：解决 Wayland 下系统窗口按钮不可用的问题
                 #[cfg(target_os = "linux")]
@@ -1363,7 +1460,20 @@ pub fn run() {
                     #[cfg(not(target_os = "windows"))]
                     let _ = window.show();
                     #[cfg(target_os = "windows")]
-                    log::info!("正常启动模式：等待主页面加载完成后显示主窗口");
+                    {
+                        if !startup_frontend_reload_in_progress
+                            && STARTUP_PAGE_LOADED.load(Ordering::SeqCst)
+                            && !STARTUP_WINDOW_SHOWN.swap(true, Ordering::SeqCst)
+                        {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                            log::info!("首次启动数据处理完成且主页面已加载，主窗口已显示");
+                        } else if startup_frontend_reload_in_progress {
+                            log::info!("正常启动模式：等待首次导入后的前端刷新完成");
+                        } else {
+                            log::info!("正常启动模式：等待主页面加载完成后显示主窗口");
+                        }
+                    }
                     #[cfg(not(target_os = "windows"))]
                     log::info!("正常启动模式：主窗口已显示");
 

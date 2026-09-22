@@ -124,6 +124,7 @@ impl Database {
             conn: Mutex::new(conn),
         };
         db.create_tables()?;
+        db.normalize_legacy_proxy_port()?;
 
         // Pre-migration backup: only when upgrading from an existing database
         {
@@ -198,6 +199,7 @@ impl Database {
             conn: Mutex::new(conn),
         };
         db.create_tables()?;
+        db.normalize_legacy_proxy_port()?;
         db.ensure_model_pricing_seeded()?;
 
         Ok(db)

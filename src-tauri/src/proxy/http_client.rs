@@ -444,9 +444,9 @@ mod tests {
         set_proxy_port(DEFAULT_PROXY_PORT);
 
         // 只有指向 CC Switch 自己端口的 loopback 地址才返回 true
-        assert!(proxy_points_to_loopback("http://127.0.0.1:15722"));
-        assert!(proxy_points_to_loopback("socks5://localhost:15722"));
-        assert!(proxy_points_to_loopback("127.0.0.1:15722"));
+        assert!(proxy_points_to_loopback("http://127.0.0.1:15721"));
+        assert!(proxy_points_to_loopback("socks5://localhost:15721"));
+        assert!(proxy_points_to_loopback("127.0.0.1:15721"));
 
         // 其他 loopback 端口不应该被跳过（允许使用其他本地代理工具）
         assert!(!proxy_points_to_loopback("http://127.0.0.1:7890"));
@@ -454,7 +454,7 @@ mod tests {
 
         // 非 loopback 地址不应该被跳过
         assert!(!proxy_points_to_loopback("http://192.168.1.10:7890"));
-        assert!(!proxy_points_to_loopback("http://192.168.1.10:15722"));
+        assert!(!proxy_points_to_loopback("http://192.168.1.10:15721"));
     }
 
     #[test]
@@ -478,7 +478,7 @@ mod tests {
         }
 
         // 指向 CC Switch 端口的代理应该被跳过
-        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:15722");
+        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:15721");
         assert!(system_proxy_points_to_loopback());
 
         // 指向其他端口的本地代理不应该被跳过

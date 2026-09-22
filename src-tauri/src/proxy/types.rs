@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// PPBind 默认代理端口。与官方 CC Switch 的 15721 分开，支持两个应用同时运行。
-pub const DEFAULT_PROXY_PORT: u16 = 15_722;
+/// PPBind 默认代理端口。与官方 CC Switch 保持一致，应用本身负责互斥启动。
+pub const DEFAULT_PROXY_PORT: u16 = 15_721;
 
 /// 代理服务器配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,7 +46,7 @@ impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
             listen_address: "127.0.0.1".to_string(),
-            listen_port: DEFAULT_PROXY_PORT, // 与官方 CC Switch 独立，避免端口冲突
+            listen_port: DEFAULT_PROXY_PORT, // 与官方 CC Switch 保持一致
             max_retries: 3,
             request_timeout: 600,
             enable_logging: true,

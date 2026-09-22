@@ -186,8 +186,7 @@ fn extract_responses_session(
 
 /// 从 Codex 的 turn metadata JSON 请求头提取稳定会话 ID。
 fn extract_codex_turn_metadata(headers: &HeaderMap) -> Option<SessionIdResult> {
-    let value = headers.get("x-codex-turn-metadata")?.to_str().ok()?;
-    let metadata = serde_json::from_str::<serde_json::Value>(value).ok()?;
+    let metadata = parse_codex_turn_metadata(headers)?;
     let session_id = metadata
         .get("thread_id")
         .or_else(|| metadata.get("session_id"))
@@ -200,6 +199,49 @@ fn extract_codex_turn_metadata(headers: &HeaderMap) -> Option<SessionIdResult> {
         source: SessionIdSource::Header,
         client_provided: true,
     })
+}
+
+fn parse_codex_turn_metadata(headers: &HeaderMap) -> Option<serde_json::Value> {
+    let value = headers.get("x-codex-turn-metadata")?.to_str().ok()?;
+    serde_json::from_str::<serde_json::Value>(value).ok()
+}
+
+/// Extract workspace roots from Codex turn metadata.
+///
+/// New Codex versions include a `workspaces` object whose keys are normalized
+/// workspace roots. This lets project routing work on the first request of a
+/// session, before rollout history has been flushed and scanned.
+pub(crate) fn extract_codex_workspace_paths(headers: &HeaderMap) -> Vec<String> {
+    let Some(metadata) = parse_codex_turn_metadata(headers) else {
+        return Vec::new();
+    };
+
+    let Some(workspaces) = metadata.get("workspaces") else {
+        return Vec::new();
+    };
+
+    if let Some(workspaces) = workspaces.as_object() {
+        return workspaces
+            .keys()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+
+    workspaces
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|workspace| {
+            workspace
+                .as_str()
+                .or_else(|| workspace.get("path").and_then(|value| value.as_str()))
+        })
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// 从 metadata 提取 Session ID (Claude)
@@ -376,6 +418,23 @@ mod tests {
         );
         assert_eq!(result.source, SessionIdSource::Header);
         assert!(result.client_provided);
+    }
+
+    #[test]
+    fn test_codex_turn_metadata_extracts_workspace_paths() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-codex-turn-metadata",
+            r#"{"thread_id":"thread-1","workspaces":{"C:\\project\\demo":{"has_changes":true},"C:\\project\\demo\\sub":{"has_changes":false}}}"#
+                .parse()
+                .unwrap(),
+        );
+
+        let paths = extract_codex_workspace_paths(&headers);
+
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&r"C:\project\demo".to_string()));
+        assert!(paths.contains(&r"C:\project\demo\sub".to_string()));
     }
 
     #[test]

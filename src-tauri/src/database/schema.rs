@@ -20,6 +20,25 @@ impl Database {
         Self::create_tables_on_conn(&conn)
     }
 
+    /// 将旧版 PPBind 的 15722 端口统一到官方 CC Switch 使用的 15721。
+    /// 15722 只可能是 PPBind 早期默认值，不应继续留在现有数据库中。
+    pub(crate) fn normalize_legacy_proxy_port(&self) -> Result<(), AppError> {
+        let conn = lock_conn!(self.conn);
+        Self::normalize_legacy_proxy_port_on_conn(&conn)
+    }
+
+    pub(crate) fn normalize_legacy_proxy_port_on_conn(conn: &Connection) -> Result<(), AppError> {
+        if !Self::table_exists(conn, "proxy_config")? {
+            return Ok(());
+        }
+        conn.execute(
+            "UPDATE proxy_config SET listen_port = ?1 WHERE listen_port = 15722",
+            [crate::proxy::types::DEFAULT_PROXY_PORT],
+        )
+        .map_err(|e| AppError::Database(format!("统一代理端口失败: {e}")))?;
+        Ok(())
+    }
+
     /// 在指定连接上创建表（供迁移和测试使用）
     pub(crate) fn create_tables_on_conn(conn: &Connection) -> Result<(), AppError> {
         // 1. Providers 表
@@ -166,7 +185,7 @@ impl Database {
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_config (
             app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
-            listen_port INTEGER NOT NULL DEFAULT 15722, enable_logging INTEGER NOT NULL DEFAULT 1,
+            listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
@@ -421,7 +440,7 @@ impl Database {
             [],
         );
         let _ = conn.execute(
-            "ALTER TABLE proxy_config ADD COLUMN listen_port INTEGER NOT NULL DEFAULT 15722",
+            "ALTER TABLE proxy_config ADD COLUMN listen_port INTEGER NOT NULL DEFAULT 15721",
             [],
         );
         let _ = conn.execute(
@@ -785,7 +804,7 @@ impl Database {
                 conn,
                 "proxy_config",
                 "listen_port",
-                "INTEGER NOT NULL DEFAULT 15722",
+                "INTEGER NOT NULL DEFAULT 15721",
             )?;
             Self::add_column_if_missing(
                 conn,
@@ -995,7 +1014,7 @@ impl Database {
         conn.execute("CREATE TABLE proxy_config_new (
             app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
             proxy_enabled INTEGER NOT NULL DEFAULT 0, listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
-            listen_port INTEGER NOT NULL DEFAULT 15722, enable_logging INTEGER NOT NULL DEFAULT 1,
+            listen_port INTEGER NOT NULL DEFAULT 15721, enable_logging INTEGER NOT NULL DEFAULT 1,
             enabled INTEGER NOT NULL DEFAULT 0, auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
             max_retries INTEGER NOT NULL DEFAULT 3, streaming_first_byte_timeout INTEGER NOT NULL DEFAULT 60,
             streaming_idle_timeout INTEGER NOT NULL DEFAULT 120, non_streaming_timeout INTEGER NOT NULL DEFAULT 600,
@@ -1558,7 +1577,7 @@ impl Database {
                 app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
                 proxy_enabled INTEGER NOT NULL DEFAULT 0,
                 listen_address TEXT NOT NULL DEFAULT '127.0.0.1',
-                listen_port INTEGER NOT NULL DEFAULT 15722,
+                listen_port INTEGER NOT NULL DEFAULT 15721,
                 enable_logging INTEGER NOT NULL DEFAULT 1,
                 enabled INTEGER NOT NULL DEFAULT 0,
                 auto_failover_enabled INTEGER NOT NULL DEFAULT 0,
@@ -1585,7 +1604,7 @@ impl Database {
             ("app_type", "'claude'"),
             ("proxy_enabled", "0"),
             ("listen_address", "'127.0.0.1'"),
-            ("listen_port", "15722"),
+            ("listen_port", "15721"),
             ("enable_logging", "1"),
             ("enabled", "0"),
             ("auto_failover_enabled", "0"),
