@@ -65,6 +65,15 @@ jobs:
             --bundles dmg \
             --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
+      - name: Build universal app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm tauri build \
+            --target universal-apple-darwin \
+            --bundles app \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
       - name: Collect release files
         shell: bash
         run: |
@@ -149,4 +158,5 @@ jobs:
           rm -f \
             release-macos/SHA256SUMS-existing.txt \
             release-macos/SHA256SUMS-macos.txt
+
 
