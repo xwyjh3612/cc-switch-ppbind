@@ -93,7 +93,7 @@ jobs:
           ls -lh release-macos
 
       - name: Upload macOS workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: PPBind-macOS-universal-unsigned
           path: release-macos/*
