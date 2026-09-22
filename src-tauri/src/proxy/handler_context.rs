@@ -12,7 +12,7 @@ use crate::proxy::{
     ProxyError,
 };
 use axum::http::HeaderMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// 流式超时配置
 #[derive(Debug, Clone, Copy)]
@@ -168,6 +168,54 @@ impl RequestContext {
                 break;
             }
         }
+
+        if app_type_str == "codex" {
+            if let Some(project_path_key) = route_override
+                .as_ref()
+                .and_then(|route| route.project_path_key.as_deref())
+            {
+                crate::project_manager::record_recent_codex_activity(
+                    project_path_key,
+                    crate::proxy::session::extract_codex_prompt_texts(body),
+                );
+            }
+        }
+
+        // Codex title generation and some fully isolated helper tasks omit cwd,
+        // workspace and parent-thread metadata. Only inherit a recent project
+        // when the thread is truly unregistered; ordinary unbound sessions must
+        // never pick up another project's route.
+        if route_override.is_none()
+            && app_type_str == "codex"
+            && session_result.client_provided
+            && workspace_paths.is_empty()
+            && crate::project_manager::is_unregistered_codex_thread(&session_id)
+        {
+            let title_prompt = crate::proxy::session::extract_codex_title_generation_prompt(body);
+            let max_age = if title_prompt.is_some() {
+                Duration::from_secs(15)
+            } else {
+                Duration::from_secs(3)
+            };
+            if let Some(activity) =
+                crate::project_manager::get_recent_codex_activity(max_age, title_prompt.as_deref())
+            {
+                if let Ok(Some(route)) = crate::project_manager::resolve_route_override_for_path_key(
+                    &state.db,
+                    app_type_str,
+                    &activity.project_path_key,
+                ) {
+                    log::info!(
+                        "[{}] Ephemeral Codex thread {} inherited recent project route: {}",
+                        tag,
+                        session_id,
+                        activity.project_path_key
+                    );
+                    route_override = Some(route);
+                }
+            }
+        }
+
         let route_override_active = route_override.is_some();
         let force_model = route_override
             .as_ref()

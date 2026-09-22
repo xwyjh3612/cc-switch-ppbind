@@ -122,14 +122,14 @@ static SESSION_PROJECT_CACHE: LazyLock<RwLock<HashMap<(String, String), CachedSe
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 const SESSION_PROJECT_POSITIVE_TTL: Duration = Duration::from_secs(30 * 60);
-const SESSION_PROJECT_NEGATIVE_TTL: Duration = Duration::from_secs(5);
 
 /// Resolve the project directory for a client-provided session ID.
 ///
 /// Codex stores the authoritative `thread_id -> cwd` mapping in its state DB
 /// before sending the first upstream request. Prefer that lookup over scanning
-/// rollout files, which may not have been flushed yet. Negative lookups are
-/// cached briefly so a burst of sub-requests does not repeatedly scan history.
+/// rollout files, which may not have been flushed yet. Only successful lookups
+/// are cached because Codex may publish thread cwd shortly after the first
+/// request.
 pub fn lookup_session_project_dir(app_type: &str, session_id: &str) -> Option<String> {
     if session_id.trim().is_empty() || !matches!(app_type, "codex" | "claude") {
         return None;
@@ -150,19 +150,20 @@ pub fn lookup_session_project_dir(app_type: &str, session_id: &str) -> Option<St
     }
 
     let project_dir = lookup_session_project_dir_uncached(app_type, lookup_id);
-    let ttl = if project_dir.is_some() {
-        SESSION_PROJECT_POSITIVE_TTL
-    } else {
-        SESSION_PROJECT_NEGATIVE_TTL
-    };
-    if let Ok(mut cache) = SESSION_PROJECT_CACHE.write() {
-        cache.insert(
-            cache_key,
-            CachedSessionProject {
-                project_dir: project_dir.clone(),
-                expires_at: Instant::now() + ttl,
-            },
-        );
+    // Do not cache misses. Codex writes ephemeral thread metadata and its
+    // diagnostic cwd asynchronously, so a miss can become resolvable a few
+    // milliseconds later. Caching that miss caused title/subagent requests to
+    // keep using the global provider even after their project was available.
+    if let Some(project_dir) = project_dir.as_ref() {
+        if let Ok(mut cache) = SESSION_PROJECT_CACHE.write() {
+            cache.insert(
+                cache_key,
+                CachedSessionProject {
+                    project_dir: Some(project_dir.clone()),
+                    expires_at: Instant::now() + SESSION_PROJECT_POSITIVE_TTL,
+                },
+            );
+        }
     }
     project_dir
 }
@@ -202,6 +203,27 @@ fn lookup_session_project_dir_uncached(app_type: &str, lookup_id: &str) -> Optio
         .find(|session| session.provider_id == app_type && session.session_id == lookup_id)
         .and_then(|session| session.project_dir)
 }
+
+/// Return true only when Codex has no state or diagnostic-log registration for a
+/// thread. The recent-project fallback is intentionally restricted to these
+/// helper threads so an ordinary unbound project cannot inherit another
+/// project's route.
+pub fn is_unregistered_codex_thread(session_id: &str) -> bool {
+    let lookup_id = normalize_session_id("codex", session_id);
+    if lookup_id.is_empty() {
+        return false;
+    }
+
+    let config_dir = crate::codex_config::get_codex_config_dir();
+    let config_text = crate::codex_config::read_codex_config_text().unwrap_or_default();
+    let state_db_paths = crate::codex_state_db::codex_state_db_paths(&config_dir, &config_text);
+    if crate::codex_state_db::lookup_codex_thread_cwd(&state_db_paths, &lookup_id).is_some() {
+        return false;
+    }
+
+    let log_db_paths = crate::codex_state_db::codex_log_db_paths(&config_dir, &config_text);
+    crate::codex_state_db::lookup_codex_thread_cwd_from_logs(&log_db_paths, &lookup_id).is_none()
+}
 const LEGACY_FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options";
 const CODEX_FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options_codex";
 const CLAUDE_FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options_claude";
@@ -210,6 +232,109 @@ const CLAUDE_FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_option
 pub struct RouteOverride {
     pub provider_id: Option<String>,
     pub force_model: Option<String>,
+    pub project_path_key: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct RecentCodexActivity {
+    pub project_path_key: String,
+    prompt_texts: Vec<String>,
+    recorded_at: Instant,
+}
+
+static RECENT_CODEX_ACTIVITIES: LazyLock<RwLock<Vec<RecentCodexActivity>>> =
+    LazyLock::new(|| RwLock::new(Vec::new()));
+const RECENT_CODEX_ACTIVITY_RETENTION: Duration = Duration::from_secs(15);
+const RECENT_CODEX_ACTIVITY_LIMIT: usize = 8;
+
+/// Keep enough context to recognize Codex's hidden title-generation request.
+///
+/// The title task is an isolated temporary thread without cwd or parent ID. It
+/// does include the original user prompt in its body, so retaining recent prompt
+/// text lets us map it back to the project route from the real turn.
+pub fn record_recent_codex_activity(project_path_key: &str, prompt_texts: Vec<String>) {
+    let project_path_key = project_path_key.trim();
+    if project_path_key.is_empty() {
+        return;
+    }
+
+    let mut prompt_texts: Vec<String> = prompt_texts
+        .into_iter()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect();
+    prompt_texts.dedup();
+
+    let now = Instant::now();
+    if let Ok(mut recent) = RECENT_CODEX_ACTIVITIES.write() {
+        recent.retain(|activity| {
+            now.duration_since(activity.recorded_at) <= RECENT_CODEX_ACTIVITY_RETENTION
+        });
+        recent.push(RecentCodexActivity {
+            project_path_key: project_path_key.to_string(),
+            prompt_texts,
+            recorded_at: now,
+        });
+        if recent.len() > RECENT_CODEX_ACTIVITY_LIMIT {
+            recent.remove(0);
+        }
+    }
+}
+
+/// Resolve a recent Codex project route for an ephemeral helper thread.
+///
+/// `prompt` is supplied for title-generation requests and must match the user
+/// text from the real turn. Other ephemeral requests only get the short
+/// time-window fallback, which is limited by the caller to unregistered threads.
+pub fn get_recent_codex_activity(
+    max_age: Duration,
+    prompt: Option<&str>,
+) -> Option<RecentCodexActivity> {
+    let recent = RECENT_CODEX_ACTIVITIES.read().ok()?;
+    let matches: Vec<&RecentCodexActivity> = recent
+        .iter()
+        .filter(|activity| activity.recorded_at.elapsed() <= max_age)
+        .collect();
+
+    if let Some(prompt) = prompt.map(str::trim).filter(|value| !value.is_empty()) {
+        return matches
+            .into_iter()
+            .rev()
+            .find(|activity| {
+                activity
+                    .prompt_texts
+                    .iter()
+                    .any(|candidate| codex_prompt_matches(candidate, prompt))
+            })
+            .cloned();
+    }
+
+    // Without a prompt fingerprint, only inherit when the short window contains
+    // exactly one project. This prevents two concurrent unbound projects from
+    // being routed to each other's provider.
+    let first = matches.first()?;
+    matches
+        .iter()
+        .all(|activity| activity.project_path_key == first.project_path_key)
+        .then(|| (*first).clone())
+}
+
+fn codex_prompt_matches(candidate: &str, prompt: &str) -> bool {
+    let candidate = candidate.trim();
+    let prompt = prompt.trim();
+    if candidate.is_empty() || prompt.is_empty() {
+        return false;
+    }
+    if candidate == prompt {
+        return true;
+    }
+
+    // Avoid treating short structural values such as "user" or "input_text" as
+    // a successful prompt match. Long prompts may differ only by surrounding
+    // formatting added by Codex.
+    let min_substring_len = 12;
+    (candidate.len() >= min_substring_len && prompt.contains(candidate))
+        || (prompt.len() >= min_substring_len && candidate.contains(prompt))
 }
 
 /// Codex proxy requests prefix the client session ID; local history does not.
@@ -436,6 +561,53 @@ pub fn resolve_route_override(
     resolve_route_override_with_workspaces(db, app_type, session_id, &[])
 }
 
+/// Resolve an enabled project route from an already-normalized project key.
+///
+/// This is used by the ephemeral-thread fallback, after the request has been
+/// linked back to a recent project by prompt fingerprint or a very short
+/// activity window.
+pub fn resolve_route_override_for_path_key(
+    db: &Database,
+    app_type: &str,
+    path_key: &str,
+) -> Result<Option<RouteOverride>, AppError> {
+    if !matches!(app_type, "codex" | "claude") || path_key.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let Some(route) = db
+        .get_project_provider_route(path_key.trim(), app_type)?
+        .filter(|route| route.enabled)
+    else {
+        return Ok(None);
+    };
+
+    let provider_id = if db
+        .get_provider_by_id(&route.provider_id, app_type)?
+        .is_some()
+    {
+        Some(route.provider_id.clone())
+    } else {
+        None
+    };
+    let force_model = route
+        .force_model_enabled
+        .then_some(route.force_model.clone())
+        .flatten()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty());
+
+    if provider_id.is_none() && force_model.is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(RouteOverride {
+        provider_id,
+        force_model,
+        project_path_key: Some(route.project_path_key),
+    }))
+}
+
 /// Resolve session/project routing using fresh workspace roots from the request
 /// before falling back to local session-history discovery.
 pub fn resolve_route_override_with_workspaces(
@@ -476,6 +648,7 @@ pub fn resolve_route_override_with_workspaces(
     // A session may override only the provider or only the model. Fill any
     // missing part from the project route, then let the caller fall back to the
     // global/provider default for whatever remains absent.
+    let mut project_path_key = session_project_path_key.clone();
     if provider_id.is_none() || force_model.is_none() {
         let path_key = if session_project_path_key.is_some() {
             session_project_path_key
@@ -488,26 +661,17 @@ pub fn resolve_route_override_with_workspaces(
                 .and_then(|project_dir| normalize_project_path(&project_dir))
         };
 
-        if let Some(path_key) = path_key.as_deref() {
-            if let Some(route) = db
-                .get_project_provider_route(path_key, app_type)?
-                .filter(|route| route.enabled)
+        if let Some(path_key) = path_key {
+            if let Some(project_route) =
+                resolve_route_override_for_path_key(db, app_type, &path_key)?
             {
-                if provider_id.is_none()
-                    && db
-                        .get_provider_by_id(&route.provider_id, app_type)?
-                        .is_some()
-                {
-                    provider_id = Some(route.provider_id);
+                if provider_id.is_none() {
+                    provider_id = project_route.provider_id;
                 }
                 if force_model.is_none() {
-                    force_model = route
-                        .force_model_enabled
-                        .then_some(route.force_model)
-                        .flatten()
-                        .map(|model| model.trim().to_string())
-                        .filter(|model| !model.is_empty());
+                    force_model = project_route.force_model;
                 }
+                project_path_key = project_route.project_path_key;
             }
         }
     }
@@ -519,6 +683,7 @@ pub fn resolve_route_override_with_workspaces(
     Ok(Some(RouteOverride {
         provider_id,
         force_model,
+        project_path_key,
     }))
 }
 
@@ -571,6 +736,14 @@ fn find_project_path_for_workspaces(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static RECENT_CODEX_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn clear_recent_codex_activity() {
+        if let Ok(mut recent) = RECENT_CODEX_ACTIVITIES.write() {
+            recent.clear();
+        }
+    }
 
     fn session(
         provider_id: &str,
@@ -846,6 +1019,78 @@ mod tests {
 
         assert_eq!(resolved.provider_id.as_deref(), Some("project-provider"));
         assert_eq!(resolved.force_model.as_deref(), Some("deepseek-v4-flash"));
+        assert_eq!(
+            resolved.project_path_key.as_deref(),
+            Some(normalize_project_path(&project_root).unwrap().as_str())
+        );
+    }
+
+    #[test]
+    fn path_key_resolves_enabled_project_route() {
+        use crate::provider::Provider;
+
+        let db = Database::memory().expect("create memory db");
+        db.save_provider(
+            "codex",
+            &Provider::with_id(
+                "project-provider".to_string(),
+                "Project Provider".to_string(),
+                serde_json::json!({}),
+                None,
+            ),
+        )
+        .unwrap();
+        db.upsert_project_provider_route(
+            "c:/workspace/demo",
+            "C:/workspace/demo",
+            "codex",
+            "project-provider",
+        )
+        .unwrap();
+        db.set_project_force_model_route("c:/workspace/demo", "codex", true, Some("gpt-5.6"))
+            .unwrap();
+
+        let resolved = resolve_route_override_for_path_key(&db, "codex", "c:/workspace/demo")
+            .unwrap()
+            .expect("path key should resolve route");
+
+        assert_eq!(resolved.provider_id.as_deref(), Some("project-provider"));
+        assert_eq!(resolved.force_model.as_deref(), Some("gpt-5.6"));
+        assert_eq!(
+            resolved.project_path_key.as_deref(),
+            Some("c:/workspace/demo")
+        );
+    }
+
+    #[test]
+    fn recent_codex_activity_requires_prompt_match_and_expires() {
+        let _guard = RECENT_CODEX_TEST_LOCK.lock().unwrap();
+        clear_recent_codex_activity();
+
+        record_recent_codex_activity(
+            "c:/workspace/demo",
+            vec!["修复项目临时会话的路由继承".to_string(), "user".to_string()],
+        );
+
+        let matched =
+            get_recent_codex_activity(Duration::from_secs(3), Some("修复项目临时会话的路由继承"))
+                .expect("matching title prompt should resolve recent activity");
+        assert_eq!(matched.project_path_key, "c:/workspace/demo");
+        assert!(get_recent_codex_activity(Duration::from_secs(3), Some("另一个项目")).is_none());
+
+        record_recent_codex_activity("c:/workspace/other", vec!["另一个项目的新请求".to_string()]);
+        assert!(get_recent_codex_activity(Duration::from_secs(3), None).is_none());
+        assert_eq!(
+            get_recent_codex_activity(Duration::from_secs(3), Some("修复项目临时会话的路由继承"))
+                .unwrap()
+                .project_path_key,
+            "c:/workspace/demo"
+        );
+
+        std::thread::sleep(Duration::from_millis(2));
+        assert!(get_recent_codex_activity(Duration::from_millis(1), None).is_none());
+
+        clear_recent_codex_activity();
     }
 
     #[test]

@@ -213,20 +213,13 @@ fn parse_codex_turn_metadata(headers: &HeaderMap) -> Option<serde_json::Value> {
 /// to the parent thread whose `cwd` and route are known. Returning both lets
 /// the proxy try the precise thread first and fall back to the parent.
 pub(crate) fn extract_codex_route_lookup_ids(headers: &HeaderMap) -> Vec<String> {
-    let Some(metadata) = parse_codex_turn_metadata(headers) else {
-        return Vec::new();
-    };
-
     let mut ids = Vec::new();
-    for key in ["thread_id", "session_id"] {
-        let Some(value) = metadata
-            .get(key)
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
+
+    let mut push_id = |value: &str| {
+        let value = value.trim();
+        if value.is_empty() {
+            return;
+        }
         let id = if value.starts_with("codex_") {
             value.to_string()
         } else {
@@ -235,8 +228,100 @@ pub(crate) fn extract_codex_route_lookup_ids(headers: &HeaderMap) -> Vec<String>
         if !ids.contains(&id) {
             ids.push(id);
         }
+    };
+
+    if let Some(metadata) = parse_codex_turn_metadata(headers) {
+        for key in [
+            "thread_id",
+            "session_id",
+            "parent_thread_id",
+            "forked_from_thread_id",
+        ] {
+            if let Some(value) = metadata.get(key).and_then(|value| value.as_str()) {
+                push_id(value);
+            }
+        }
     }
+
+    // Codex sends this compatibility header for real subagent requests. It is
+    // available on the first upstream send, unlike state/diagnostic log rows.
+    if let Some(value) = headers
+        .get("x-codex-parent-thread-id")
+        .and_then(|value| value.to_str().ok())
+    {
+        push_id(value);
+    }
+
     ids
+}
+
+/// Extract the user prompt embedded in Codex's hidden title-generation request.
+///
+/// Codex starts this task as an isolated temporary thread. It intentionally
+/// omits cwd/workspace and parent-thread information from the HTTP request, but
+/// its request body still contains the original user prompt in a fixed wrapper.
+pub(crate) fn extract_codex_title_generation_prompt(body: &serde_json::Value) -> Option<String> {
+    const TITLE_MARKER: &str = "Generate a concise, single-line task title";
+    const USER_MARKER: &str = "\n\nUser prompt:\n";
+
+    let mut strings = Vec::new();
+    collect_json_strings(body, &mut strings);
+    for text in strings {
+        if !text.contains(TITLE_MARKER) {
+            continue;
+        }
+        let Some((_, prompt)) = text.split_once(USER_MARKER) else {
+            continue;
+        };
+        let prompt = prompt.trim();
+        if !prompt.is_empty() {
+            return Some(prompt.to_string());
+        }
+    }
+    None
+}
+
+/// Collect short text candidates from a Codex request body.
+///
+/// These candidates are kept only in PPBind's in-memory recent-route cache so a
+/// title request can be matched back to the exact user turn that spawned it.
+pub(crate) fn extract_codex_prompt_texts(body: &serde_json::Value) -> Vec<String> {
+    const MAX_TEXT_BYTES: usize = 8 * 1024;
+    const MAX_CANDIDATES: usize = 64;
+
+    let mut strings = Vec::new();
+    collect_json_strings(body, &mut strings);
+    let mut candidates = Vec::new();
+    for text in strings {
+        let text = text.trim();
+        if text.is_empty() || text.len() > MAX_TEXT_BYTES {
+            continue;
+        }
+        if !candidates.iter().any(|candidate| candidate == text) {
+            candidates.push(text.to_string());
+            if candidates.len() >= MAX_CANDIDATES {
+                break;
+            }
+        }
+    }
+    candidates
+}
+
+fn collect_json_strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+    match value {
+        serde_json::Value::String(text) => out.push(text),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_json_strings(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for value in map.values() {
+                collect_json_strings(value, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Extract workspace roots from Codex turn metadata.
@@ -469,6 +554,63 @@ mod tests {
                 "codex_child-thread".to_string(),
                 "codex_parent-thread".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn test_codex_route_lookup_ids_include_compatibility_parent_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-codex-parent-thread-id", "parent-header".parse().unwrap());
+
+        assert_eq!(
+            extract_codex_route_lookup_ids(&headers),
+            vec!["codex_parent-header".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_codex_title_generation_prompt_is_extracted() {
+        let body = json!({
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Generate a concise, single-line task title of at most 36 characters for this task.\n\nUser prompt:\n修复项目临时会话的路由继承"
+                }]
+            }]
+        });
+
+        assert_eq!(
+            extract_codex_title_generation_prompt(&body).as_deref(),
+            Some("修复项目临时会话的路由继承")
+        );
+        assert_eq!(
+            extract_codex_title_generation_prompt(&json!({"input": "普通请求"})),
+            None
+        );
+    }
+
+    #[test]
+    fn test_codex_prompt_texts_collect_nested_request_text() {
+        let body = json!({
+            "input": [{
+                "type": "message",
+                "content": [
+                    {"type": "input_text", "text": "修复临时路由"},
+                    {"type": "input_text", "text": "修复临时路由"}
+                ]
+            }]
+        });
+
+        let prompts = extract_codex_prompt_texts(&body);
+        assert!(prompts.contains(&"修复临时路由".to_string()));
+        assert_eq!(
+            prompts
+                .iter()
+                .filter(|text| text.as_str() == "修复临时路由")
+                .count(),
+            1
         );
     }
 
