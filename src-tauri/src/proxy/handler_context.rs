@@ -139,13 +139,35 @@ impl RequestContext {
 
         // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）。
         // 会话/项目覆盖只影响本次请求，不修改全局 current provider。
-        let route_override = crate::project_manager::resolve_route_override_with_workspaces(
-            &state.db,
-            app_type_str,
-            &session_id,
-            &workspace_paths,
-        )
-        .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
+        //
+        // Codex 子代理的 thread_id 可能没有写入 threads 表，但同一请求头会
+        // 携带父会话 session_id。先解析精确线程，再沿父会话尝试项目路由。
+        let mut route_lookup_ids = crate::proxy::session::extract_codex_route_lookup_ids(headers);
+        if route_lookup_ids.is_empty() {
+            route_lookup_ids.push(session_id.clone());
+        }
+        let mut route_override = None;
+        for lookup_session_id in route_lookup_ids {
+            let resolved = crate::project_manager::resolve_route_override_with_workspaces(
+                &state.db,
+                app_type_str,
+                &lookup_session_id,
+                &workspace_paths,
+            )
+            .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
+            if resolved.is_some() {
+                if lookup_session_id != session_id {
+                    log::debug!(
+                        "[{}] Session {} inherited project route from {}",
+                        tag,
+                        session_id,
+                        lookup_session_id
+                    );
+                }
+                route_override = resolved;
+                break;
+            }
+        }
         let route_override_active = route_override.is_some();
         let force_model = route_override
             .as_ref()

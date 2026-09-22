@@ -185,10 +185,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-local.ps1
 ```powershell
 pnpm install
 pnpm dev
+pnpm debug:run  # debug 增量构建；停止旧进程、覆盖安装、启动一条命令完成
 pnpm typecheck
 pnpm test:unit
 pnpm format:check
 ```
+
+`pnpm debug:run` 只用于开发调试，不生成压缩安装包。功能验收通过后再执行 `pnpm build:release` 生成正式安装包。
 
 ## 文档
 

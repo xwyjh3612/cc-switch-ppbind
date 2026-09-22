@@ -16,7 +16,8 @@
     "test:unit:watch": "vitest watch",
     "build:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1",
     "build:release-fast": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release-fast.ps1",
-    "install:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-local.ps1"
+    "install:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-local.ps1",
+    "debug:run": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-build-run.ps1"
   },
   "keywords": [],
   "author": "Jason Young",

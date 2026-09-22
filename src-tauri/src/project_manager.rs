@@ -183,6 +183,18 @@ fn lookup_session_project_dir_uncached(app_type: &str, lookup_id: &str) -> Optio
             );
             return Some(project_dir);
         }
+        let log_db_paths = crate::codex_state_db::codex_log_db_paths(&config_dir, &config_text);
+        if let Some(cwd) =
+            crate::codex_state_db::lookup_codex_thread_cwd_from_logs(&log_db_paths, lookup_id)
+        {
+            let project_dir = cwd.to_string_lossy().to_string();
+            log::debug!(
+                "Resolved ephemeral Codex session {} project from log DB: {}",
+                lookup_id,
+                project_dir
+            );
+            return Some(project_dir);
+        }
     }
 
     crate::session_manager::scan_sessions()

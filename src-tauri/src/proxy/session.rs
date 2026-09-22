@@ -206,6 +206,39 @@ fn parse_codex_turn_metadata(headers: &HeaderMap) -> Option<serde_json::Value> {
     serde_json::from_str::<serde_json::Value>(value).ok()
 }
 
+/// Extract Codex session IDs that can be used for project routing.
+///
+/// The primary `thread_id` may belong to an ephemeral child agent that never
+/// appears in Codex's `threads` table. In that case `session_id` often points
+/// to the parent thread whose `cwd` and route are known. Returning both lets
+/// the proxy try the precise thread first and fall back to the parent.
+pub(crate) fn extract_codex_route_lookup_ids(headers: &HeaderMap) -> Vec<String> {
+    let Some(metadata) = parse_codex_turn_metadata(headers) else {
+        return Vec::new();
+    };
+
+    let mut ids = Vec::new();
+    for key in ["thread_id", "session_id"] {
+        let Some(value) = metadata
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let id = if value.starts_with("codex_") {
+            value.to_string()
+        } else {
+            format!("codex_{value}")
+        };
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
 /// Extract workspace roots from Codex turn metadata.
 ///
 /// New Codex versions include a `workspaces` object whose keys are normalized
@@ -418,6 +451,25 @@ mod tests {
         );
         assert_eq!(result.source, SessionIdSource::Header);
         assert!(result.client_provided);
+    }
+
+    #[test]
+    fn test_codex_route_lookup_ids_include_parent_session() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-codex-turn-metadata",
+            r#"{"thread_id":"child-thread","session_id":"parent-thread"}"#
+                .parse()
+                .unwrap(),
+        );
+
+        assert_eq!(
+            extract_codex_route_lookup_ids(&headers),
+            vec![
+                "codex_child-thread".to_string(),
+                "codex_parent-thread".to_string()
+            ]
+        );
     }
 
     #[test]

@@ -33,3 +33,4 @@ mainWindow.js
 # Local Cargo build output
 /target/
 /target-fast/
+/target-debug-fast/
