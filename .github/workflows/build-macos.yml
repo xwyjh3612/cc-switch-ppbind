@@ -1,16 +1,29 @@
-name: Build macOS
+name: Build PPBind macOS
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to attach artifacts to, for example v3.20.3 (optional)"
+        required: false
+        type: string
+      upload_to_release:
+        description: "Upload the macOS artifacts to the GitHub Release"
+        required: true
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-macos:
     name: Build universal macOS package
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 75
 
     steps:
       - name: Checkout
@@ -66,21 +79,67 @@ jobs:
           fi
 
           mkdir -p release-macos
-          cp "$DMG_PATH" "release-macos/CC-Switch-${VERSION}-macOS-universal-unsigned.dmg"
+          DMG_NAME="PPBind-${VERSION}-macOS-universal-unsigned.dmg"
+          ZIP_NAME="PPBind-${VERSION}-macOS-universal-unsigned.zip"
+          cp "$DMG_PATH" "release-macos/${DMG_NAME}"
           ditto -c -k --sequesterRsrc --keepParent \
             "$APP_PATH" \
-            "release-macos/CC-Switch-${VERSION}-macOS-universal-unsigned.zip"
+            "release-macos/${ZIP_NAME}"
 
           (
             cd release-macos
-            shasum -a 256 * > SHA256SUMS.txt
+            shasum -a 256 "${DMG_NAME}" "${ZIP_NAME}" > SHA256SUMS-macos.txt
           )
           ls -lh release-macos
 
-      - name: Upload macOS artifacts
+      - name: Upload macOS workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CC-Switch-macOS-universal-unsigned
+          name: PPBind-macOS-universal-unsigned
           path: release-macos/*
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish macOS files to GitHub Release
+        if: ${{ github.event_name == 'push' || inputs.upload_to_release }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${RELEASE_TAG_INPUT:-}" ]; then
+            TAG="$RELEASE_TAG_INPUT"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub Release $TAG does not exist" >&2
+            exit 1
+          fi
+
+          if gh release download "$TAG" \
+            --pattern SHA256SUMS.txt \
+            --dir release-macos >/dev/null 2>&1; then
+            mv release-macos/SHA256SUMS.txt release-macos/SHA256SUMS-existing.txt
+          else
+            : > release-macos/SHA256SUMS-existing.txt
+          fi
+
+          # Preserve the existing platform hashes while replacing any previous macOS entries.
+          grep -Ev 'PPBind-.*-macOS-universal-unsigned\.(dmg|zip)$' \
+            release-macos/SHA256SUMS-existing.txt \
+            > release-macos/SHA256SUMS.txt || true
+          cat release-macos/SHA256SUMS-macos.txt >> release-macos/SHA256SUMS.txt
+
+          gh release upload "$TAG" \
+            release-macos/PPBind-*-macOS-universal-unsigned.dmg \
+            release-macos/PPBind-*-macOS-universal-unsigned.zip \
+            release-macos/SHA256SUMS.txt \
+            --clobber
+
+          rm -f \
+            release-macos/SHA256SUMS-existing.txt \
+            release-macos/SHA256SUMS-macos.txt

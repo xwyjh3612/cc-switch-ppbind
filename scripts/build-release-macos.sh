@@ -32,17 +32,16 @@ if [[ -z "$APP_PATH" || -z "$DMG_PATH" ]]; then
 fi
 
 mkdir -p "$RELEASE_DIR"
-cp "$DMG_PATH" "$RELEASE_DIR/CC-Switch-${VERSION}-macOS-universal-unsigned.dmg"
+DMG_NAME="PPBind-${VERSION}-macOS-universal-unsigned.dmg"
+ZIP_NAME="PPBind-${VERSION}-macOS-universal-unsigned.zip"
+cp "$DMG_PATH" "$RELEASE_DIR/$DMG_NAME"
 ditto -c -k --sequesterRsrc --keepParent \
   "$APP_PATH" \
-  "$RELEASE_DIR/CC-Switch-${VERSION}-macOS-universal-unsigned.zip"
+  "$RELEASE_DIR/$ZIP_NAME"
 
 (
   cd "$RELEASE_DIR"
-  shasum -a 256 \
-    "CC-Switch-${VERSION}-macOS-universal-unsigned.dmg" \
-    "CC-Switch-${VERSION}-macOS-universal-unsigned.zip" \
-    > SHA256SUMS-macos.txt
+  shasum -a 256 "$DMG_NAME" "$ZIP_NAME" > SHA256SUMS-macos.txt
 )
 
 echo "macOS release artifacts: $RELEASE_DIR"
