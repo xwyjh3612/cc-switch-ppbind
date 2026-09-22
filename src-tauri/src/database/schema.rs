@@ -141,6 +141,27 @@ impl Database {
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
+        // 会话级供应商/模型覆盖：仅保存用户显式设置的会话。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_provider_routes (
+                app_type TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                project_path_key TEXT NOT NULL,
+                provider_id TEXT,
+                force_model TEXT,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (app_type, session_id)
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session_provider_routes_project
+             ON session_provider_routes(project_path_key, app_type)",
+            [],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
         // 8. Proxy Config 表（三行结构，app_type 主键）
         conn.execute("CREATE TABLE IF NOT EXISTS proxy_config (
             app_type TEXT PRIMARY KEY CHECK (app_type IN ('claude','codex','gemini','grokbuild')),
@@ -617,6 +638,29 @@ impl Database {
                             )?;
                         }
                         Self::set_user_version(conn, 21)?;
+                    }
+                    21 => {
+                        log::info!("迁移数据库从 v21 到 v22（会话级供应商与模型覆盖）");
+                        conn.execute(
+                            "CREATE TABLE IF NOT EXISTS session_provider_routes (
+                                app_type TEXT NOT NULL,
+                                session_id TEXT NOT NULL,
+                                project_path_key TEXT NOT NULL,
+                                provider_id TEXT,
+                                force_model TEXT,
+                                updated_at INTEGER NOT NULL,
+                                PRIMARY KEY (app_type, session_id)
+                            )",
+                            [],
+                        )
+                        .map_err(|e| AppError::Database(e.to_string()))?;
+                        conn.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_session_provider_routes_project
+                             ON session_provider_routes(project_path_key, app_type)",
+                            [],
+                        )
+                        .map_err(|e| AppError::Database(e.to_string()))?;
+                        Self::set_user_version(conn, 22)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(

@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use crate::database::ProjectProviderRoute;
+use crate::database::{ProjectProviderRoute, SessionProviderRoute};
 use crate::project_manager::{self, ProjectGroup};
 use crate::store::AppState;
 use serde::Serialize;
@@ -13,14 +13,20 @@ pub struct ProjectDto {
     pub project_path: String,
     pub sessions: Vec<crate::session_manager::SessionMeta>,
     pub routes: Vec<ProjectProviderRoute>,
+    pub session_routes: Vec<SessionProviderRoute>,
 }
 
-fn project_dto(group: ProjectGroup, routes: Vec<ProjectProviderRoute>) -> ProjectDto {
+fn project_dto(
+    group: ProjectGroup,
+    routes: Vec<ProjectProviderRoute>,
+    session_routes: Vec<SessionProviderRoute>,
+) -> ProjectDto {
     ProjectDto {
         path_key: group.path_key,
         project_path: group.project_path,
         sessions: group.sessions,
         routes,
+        session_routes,
     }
 }
 
@@ -31,6 +37,8 @@ pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectDto>
         let sessions = crate::session_manager::scan_sessions();
         let groups = project_manager::group_sessions_by_project(sessions);
         let routes = project_manager::list_routes(&db).map_err(|e| e.to_string())?;
+        let session_routes =
+            project_manager::list_session_routes(&db).map_err(|e| e.to_string())?;
         Ok(groups
             .into_iter()
             .map(|group| {
@@ -39,7 +47,12 @@ pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectDto>
                     .filter(|route| route.project_path_key == group.path_key)
                     .cloned()
                     .collect();
-                project_dto(group, group_routes)
+                let group_session_routes = session_routes
+                    .iter()
+                    .filter(|route| route.project_path_key == group.path_key)
+                    .cloned()
+                    .collect();
+                project_dto(group, group_routes, group_session_routes)
             })
             .collect())
     })
@@ -77,6 +90,41 @@ pub fn set_project_provider(
     }
     project_manager::upsert_route(&state.db, &projectPath, &appType, &providerId)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_session_route(
+    state: State<'_, AppState>,
+    projectPath: String,
+    appType: String,
+    sessionId: String,
+    providerId: Option<String>,
+    forceModel: Option<String>,
+) -> Result<Option<SessionProviderRoute>, String> {
+    if !matches!(appType.as_str(), "codex" | "claude") {
+        return Err(format!("不支持的项目客户端: {appType}"));
+    }
+    project_manager::set_session_route(
+        &state.db,
+        &projectPath,
+        &appType,
+        &sessionId,
+        providerId.as_deref(),
+        forceModel.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_session_route(
+    state: State<'_, AppState>,
+    appType: String,
+    sessionId: String,
+) -> Result<bool, String> {
+    if !matches!(appType.as_str(), "codex" | "claude") {
+        return Err(format!("不支持的项目客户端: {appType}"));
+    }
+    project_manager::clear_session_route(&state.db, &appType, &sessionId).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

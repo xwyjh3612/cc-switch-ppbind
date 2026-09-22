@@ -88,8 +88,11 @@ impl Database {
     ) -> Result<ProjectProviderRoute, AppError> {
         let updated_at = chrono::Utc::now().timestamp_millis();
         {
-            let conn = lock_conn!(self.conn);
-            conn.execute(
+            let mut conn = lock_conn!(self.conn);
+            let tx = conn
+                .transaction()
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            tx.execute(
                 "INSERT INTO project_provider_routes
                  (project_path_key, project_path, app_type, provider_id, enabled,
                   force_model_enabled, force_model, updated_at)
@@ -108,6 +111,13 @@ impl Database {
                 ],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM session_provider_routes
+                 WHERE project_path_key = ?1 AND app_type = ?2",
+                params![project_path_key, app_type],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         }
 
         self.get_project_provider_route(project_path_key, app_type)?
@@ -124,8 +134,11 @@ impl Database {
         let updated_at = chrono::Utc::now().timestamp_millis();
         let force_model = force_model.map(str::trim).filter(|value| !value.is_empty());
         {
-            let conn = lock_conn!(self.conn);
-            let affected = conn
+            let mut conn = lock_conn!(self.conn);
+            let tx = conn
+                .transaction()
+                .map_err(|e| AppError::Database(e.to_string()))?;
+            let affected = tx
                 .execute(
                     "UPDATE project_provider_routes
                      SET force_model_enabled = ?1,
@@ -145,6 +158,14 @@ impl Database {
             if affected == 0 {
                 return Err(AppError::InvalidInput("请先为该项目选择供应商".to_string()));
             }
+
+            tx.execute(
+                "DELETE FROM session_provider_routes
+                 WHERE project_path_key = ?1 AND app_type = ?2",
+                params![project_path_key, app_type],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+            tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         }
 
         self.get_project_provider_route(project_path_key, app_type)?
@@ -155,12 +176,23 @@ impl Database {
         &self,
         app_type: &str,
     ) -> Result<usize, AppError> {
-        let conn = lock_conn!(self.conn);
-        conn.execute(
-            "DELETE FROM project_provider_routes WHERE app_type = ?1",
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn
+            .transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.execute(
+            "DELETE FROM session_provider_routes WHERE app_type = ?1",
             params![app_type],
         )
-        .map_err(|e| AppError::Database(e.to_string()))
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        let affected = tx
+            .execute(
+                "DELETE FROM project_provider_routes WHERE app_type = ?1",
+                params![app_type],
+            )
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
+        Ok(affected)
     }
 
     pub fn delete_project_provider_route(
@@ -168,13 +200,23 @@ impl Database {
         project_path_key: &str,
         app_type: &str,
     ) -> Result<bool, AppError> {
-        let conn = lock_conn!(self.conn);
-        let affected = conn
+        let mut conn = lock_conn!(self.conn);
+        let tx = conn
+            .transaction()
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.execute(
+            "DELETE FROM session_provider_routes
+             WHERE project_path_key = ?1 AND app_type = ?2",
+            params![project_path_key, app_type],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+        let affected = tx
             .execute(
                 "DELETE FROM project_provider_routes WHERE project_path_key = ?1 AND app_type = ?2",
                 params![project_path_key, app_type],
             )
             .map_err(|e| AppError::Database(e.to_string()))?;
+        tx.commit().map_err(|e| AppError::Database(e.to_string()))?;
         Ok(affected > 0)
     }
 }

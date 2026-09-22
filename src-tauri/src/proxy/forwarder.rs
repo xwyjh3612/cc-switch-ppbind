@@ -168,9 +168,9 @@ pub struct RequestForwarder {
     app_handle: Option<tauri::AppHandle>,
     /// 请求开始时的"当前供应商 ID"（用于判断是否需要同步 UI/托盘）
     current_provider_id_at_start: String,
-    /// 项目级路由不应把实际 provider 同步回全局当前 provider。
-    project_route_override: bool,
-    /// 项目级强制路由模型；开启后会覆盖供应商默认模型映射。
+    /// 会话级或项目级路由不应把实际 provider 同步回全局当前 provider。
+    route_override: bool,
+    /// 会话级或项目级强制路由模型；开启后会覆盖供应商默认模型映射。
     force_model: Option<String>,
     /// 代理会话 ID（用于 Gemini Native shadow replay）
     session_id: String,
@@ -195,23 +195,23 @@ pub struct RequestForwarder {
 }
 
 impl RequestForwarder {
-    /// Mark this forwarder as using an explicit project route.
+    /// Mark this forwarder as using an explicit session or project route.
     ///
     /// The request may use a different provider from the global current one,
     /// but that must not trigger the existing failover UI/global switch path.
-    pub fn with_project_route_override(mut self, enabled: bool) -> Self {
-        self.project_route_override = enabled;
+    pub fn with_route_override(mut self, enabled: bool) -> Self {
+        self.route_override = enabled;
         self
     }
 
-    /// Apply a project-scoped model override.
+    /// Apply a session- or project-scoped model override.
     pub fn with_force_model(mut self, model: Option<String>) -> Self {
         self.force_model = model.filter(|value| !value.trim().is_empty());
         self
     }
 
     /// Keep the forced model authoritative across provider-specific mappings and
-    /// request transformations. All project-supported APIs carry `model` in JSON.
+    /// request transformations. All route-supported APIs carry `model` in JSON.
     fn apply_force_model(&self, body: &mut Value) {
         let Some(model) = self.force_model.as_deref() else {
             return;
@@ -298,7 +298,7 @@ impl RequestForwarder {
             failover_manager,
             app_handle,
             current_provider_id_at_start,
-            project_route_override: false,
+            route_override: false,
             force_model: None,
             session_id,
             session_client_provided,
@@ -590,7 +590,7 @@ impl RequestForwarder {
                         let mut status = self.status.write().await;
                         status.success_requests += 1;
                         status.last_error = None;
-                        let should_switch = !self.project_route_override
+                        let should_switch = !self.route_override
                             && self.current_provider_id_at_start.as_str() != provider.id.as_str();
                         if should_switch {
                             status.failover_count += 1;
@@ -693,7 +693,7 @@ impl RequestForwarder {
                                         let mut status = self.status.write().await;
                                         status.success_requests += 1;
                                         status.last_error = None;
-                                        let should_switch = !self.project_route_override
+                                        let should_switch = !self.route_override
                                             && self.current_provider_id_at_start.as_str()
                                                 != provider.id.as_str();
                                         if should_switch {
@@ -839,7 +839,7 @@ impl RequestForwarder {
                                             let mut status = self.status.write().await;
                                             status.success_requests += 1;
                                             status.last_error = None;
-                                            let should_switch = !self.project_route_override
+                                            let should_switch = !self.route_override
                                                 && self.current_provider_id_at_start.as_str()
                                                     != provider.id.as_str();
                                             if should_switch {
@@ -1003,7 +1003,7 @@ impl RequestForwarder {
                                         let mut status = self.status.write().await;
                                         status.success_requests += 1;
                                         status.last_error = None;
-                                        let should_switch = !self.project_route_override
+                                        let should_switch = !self.route_override
                                             && self.current_provider_id_at_start.as_str()
                                                 != provider.id.as_str();
                                         if should_switch {
@@ -3934,7 +3934,7 @@ mod tests {
             failover_manager: Arc::new(FailoverSwitchManager::new(db)),
             app_handle: None,
             current_provider_id_at_start: String::new(),
-            project_route_override: false,
+            route_override: false,
             force_model: None,
             session_id: String::new(),
             session_client_provided: false,

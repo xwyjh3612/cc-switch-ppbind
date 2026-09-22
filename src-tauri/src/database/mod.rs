@@ -42,7 +42,7 @@ pub(crate) use dao::proxy::{
 };
 pub use dao::FailoverQueueItem;
 pub use dao::Profile;
-pub use dao::ProjectProviderRoute;
+pub use dao::{ProjectProviderRoute, SessionProviderRoute};
 
 use crate::config::get_app_db_path;
 use crate::error::AppError;
@@ -54,7 +54,7 @@ use std::sync::Mutex;
 
 /// 当前 Schema 版本号
 /// 每次修改表结构时递增，并在 schema.rs 中添加相应的迁移逻辑
-pub(crate) const SCHEMA_VERSION: i32 = 21;
+pub(crate) const SCHEMA_VERSION: i32 = 22;
 
 /// 安全地序列化 JSON，避免 unwrap panic
 pub(crate) fn to_json_string<T: Serialize>(value: &T) -> Result<String, AppError> {

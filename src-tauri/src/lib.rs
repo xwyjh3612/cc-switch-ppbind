@@ -1636,6 +1636,8 @@ pub fn run() {
             commands::add_project_force_model,
             commands::delete_project_force_model,
             commands::set_project_force_model,
+            commands::set_session_route,
+            commands::clear_session_route,
             // Session manager
             commands::list_sessions,
             commands::get_session_messages,

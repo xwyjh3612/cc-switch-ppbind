@@ -12,11 +12,21 @@ export interface ProjectProviderRoute {
   updatedAt: number;
 }
 
+export interface SessionProviderRoute {
+  appType: string;
+  sessionId: string;
+  projectPathKey: string;
+  providerId?: string | null;
+  forceModel?: string | null;
+  updatedAt: number;
+}
+
 export interface ProjectDto {
   pathKey: string;
   projectPath: string;
   sessions: SessionMeta[];
   routes: ProjectProviderRoute[];
+  sessionRoutes: SessionProviderRoute[];
 }
 
 export const projectsApi = {
@@ -51,6 +61,27 @@ export const projectsApi = {
   },
   async deleteForceModel(appType: string, model: string): Promise<string[]> {
     return await invoke("delete_project_force_model", { appType, model });
+  },
+  async setSessionRoute(options: {
+    projectPath: string;
+    appType: string;
+    sessionId: string;
+    providerId?: string | null;
+    forceModel?: string | null;
+  }): Promise<SessionProviderRoute | null> {
+    return await invoke("set_session_route", {
+      projectPath: options.projectPath,
+      appType: options.appType,
+      sessionId: options.sessionId,
+      providerId: options.providerId ?? null,
+      forceModel: options.forceModel ?? null,
+    });
+  },
+  async clearSessionRoute(
+    appType: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    return await invoke("clear_session_route", { appType, sessionId });
   },
   async setForceModel(options: {
     projectPath: string;

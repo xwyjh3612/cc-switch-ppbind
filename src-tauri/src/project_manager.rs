@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
 
-use crate::database::{Database, ProjectProviderRoute};
+use crate::database::{Database, ProjectProviderRoute, SessionProviderRoute};
 use crate::error::AppError;
 use crate::session_manager::SessionMeta;
 
@@ -149,9 +149,23 @@ const CODEX_FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options
 const CLAUDE_FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options_claude";
 
 #[derive(Debug, Clone)]
-pub struct ProjectRouteOverride {
-    pub provider_id: String,
+pub struct RouteOverride {
+    pub provider_id: Option<String>,
     pub force_model: Option<String>,
+}
+
+/// Codex proxy requests prefix the client session ID; local history does not.
+/// Store and resolve session routes under one canonical ID.
+pub fn normalize_session_id(app_type: &str, session_id: &str) -> String {
+    let session_id = session_id.trim();
+    if app_type == "codex" {
+        session_id
+            .strip_prefix("codex_")
+            .unwrap_or(session_id)
+            .to_string()
+    } else {
+        session_id.to_string()
+    }
 }
 
 fn normalize_force_model_option(model: &str) -> Result<String, AppError> {
@@ -283,6 +297,67 @@ pub fn set_force_model(
     db.set_project_force_model_route(&path_key, app_type, enabled, force_model.as_deref())
 }
 
+pub fn set_session_route(
+    db: &Database,
+    project_path: &str,
+    app_type: &str,
+    session_id: &str,
+    provider_id: Option<&str>,
+    force_model: Option<&str>,
+) -> Result<Option<SessionProviderRoute>, AppError> {
+    let path_key = normalize_project_path(project_path)
+        .ok_or_else(|| AppError::InvalidInput("项目目录不能为空".to_string()))?;
+    let session_id = normalize_session_id(app_type, session_id);
+    if session_id.is_empty() {
+        return Err(AppError::InvalidInput("会话 ID 不能为空".to_string()));
+    }
+    if session_id.len() > 500 || session_id.contains(['\r', '\n']) {
+        return Err(AppError::InvalidInput("会话 ID 格式不正确".to_string()));
+    }
+
+    let provider_id = provider_id.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(provider_id) = provider_id {
+        if db
+            .get_provider_by_id(provider_id, app_type)
+            .map_err(|e| AppError::Database(e.to_string()))?
+            .is_none()
+        {
+            return Err(AppError::InvalidInput(format!(
+                "供应商不存在: {provider_id}"
+            )));
+        }
+    }
+
+    let force_model = match force_model {
+        Some(model) if !model.trim().is_empty() => Some(normalize_force_model_option(model)?),
+        _ => None,
+    };
+
+    db.upsert_session_provider_route(
+        app_type,
+        &session_id,
+        &path_key,
+        provider_id,
+        force_model.as_deref(),
+    )
+}
+
+pub fn clear_session_route(
+    db: &Database,
+    app_type: &str,
+    session_id: &str,
+) -> Result<bool, AppError> {
+    let session_id = normalize_session_id(app_type, session_id);
+    if session_id.is_empty() {
+        return Err(AppError::InvalidInput("会话 ID 不能为空".to_string()));
+    }
+    db.delete_session_provider_route(app_type, &session_id)
+}
+
+pub fn list_session_routes(db: &Database) -> Result<Vec<SessionProviderRoute>, AppError> {
+    db.list_session_provider_routes()
+}
+
 pub fn delete_route(db: &Database, project_path: &str, app_type: &str) -> Result<bool, AppError> {
     let path_key = normalize_project_path(project_path)
         .ok_or_else(|| AppError::InvalidInput("项目目录不能为空".to_string()))?;
@@ -298,38 +373,74 @@ pub fn resolve_route_override(
     db: &Database,
     app_type: &str,
     session_id: &str,
-) -> Result<Option<ProjectRouteOverride>, AppError> {
-    let Some(project_dir) = lookup_session_project_dir(app_type, session_id) else {
-        return Ok(None);
-    };
-    let Some(path_key) = normalize_project_path(&project_dir) else {
-        return Ok(None);
-    };
-    let Some(route) = db
-        .get_project_provider_route(&path_key, app_type)?
-        .filter(|route| route.enabled)
-    else {
-        return Ok(None);
-    };
-
-    // A deleted provider must not make an otherwise valid project request fail;
-    // stale overrides safely fall back to the existing global route.
-    if db
-        .get_provider_by_id(&route.provider_id, app_type)?
-        .is_none()
-    {
+) -> Result<Option<RouteOverride>, AppError> {
+    if !matches!(app_type, "codex" | "claude") {
         return Ok(None);
     }
 
-    let force_model = route
-        .force_model_enabled
-        .then_some(route.force_model)
-        .flatten()
-        .map(|model| model.trim().to_string())
-        .filter(|model| !model.is_empty());
+    let session_id = normalize_session_id(app_type, session_id);
+    let mut provider_id = None;
+    let mut force_model = None;
+    let mut session_project_path_key = None;
 
-    Ok(Some(ProjectRouteOverride {
-        provider_id: route.provider_id,
+    if !session_id.is_empty() {
+        if let Some(session_route) = db.get_session_provider_route(app_type, &session_id)? {
+            if let Some(candidate) = session_route
+                .provider_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                if db.get_provider_by_id(candidate, app_type)?.is_some() {
+                    provider_id = Some(candidate.to_string());
+                }
+            }
+            force_model = session_route
+                .force_model
+                .map(|model| model.trim().to_string())
+                .filter(|model| !model.is_empty());
+            session_project_path_key = Some(session_route.project_path_key);
+        }
+    }
+
+    // A session may override only the provider or only the model. Fill any
+    // missing part from the project route, then let the caller fall back to the
+    // global/provider default for whatever remains absent.
+    if provider_id.is_none() || force_model.is_none() {
+        let path_key = session_project_path_key.or_else(|| {
+            lookup_session_project_dir(app_type, &session_id)
+                .and_then(|project_dir| normalize_project_path(&project_dir))
+        });
+        if let Some(path_key) = path_key {
+            if let Some(route) = db
+                .get_project_provider_route(&path_key, app_type)?
+                .filter(|route| route.enabled)
+            {
+                if provider_id.is_none()
+                    && db
+                        .get_provider_by_id(&route.provider_id, app_type)?
+                        .is_some()
+                {
+                    provider_id = Some(route.provider_id);
+                }
+                if force_model.is_none() {
+                    force_model = route
+                        .force_model_enabled
+                        .then_some(route.force_model)
+                        .flatten()
+                        .map(|model| model.trim().to_string())
+                        .filter(|model| !model.is_empty());
+                }
+            }
+        }
+    }
+
+    if provider_id.is_none() && force_model.is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(RouteOverride {
+        provider_id,
         force_model,
     }))
 }
@@ -420,6 +531,152 @@ mod tests {
             list_force_models(&db, "claude").unwrap(),
             vec!["legacy-model".to_string(), "claude-sonnet".to_string()]
         );
+    }
+
+    #[test]
+    fn normalizes_codex_proxy_session_prefix() {
+        assert_eq!(normalize_session_id("codex", "codex_abc-123"), "abc-123");
+        assert_eq!(normalize_session_id("codex", "abc-123"), "abc-123");
+        assert_eq!(normalize_session_id("claude", "session-abc"), "session-abc");
+    }
+
+    #[test]
+    fn changing_project_provider_resets_session_routes() {
+        let db = Database::memory().expect("create memory db");
+        db.upsert_project_provider_route(
+            "c:/workspace/demo",
+            "C:/workspace/demo",
+            "codex",
+            "provider-a",
+        )
+        .unwrap();
+        db.upsert_session_provider_route(
+            "codex",
+            "session-1",
+            "c:/workspace/demo",
+            Some("provider-a"),
+            Some("gpt-5.6"),
+        )
+        .unwrap();
+
+        db.upsert_project_provider_route(
+            "c:/workspace/demo",
+            "C:/workspace/demo",
+            "codex",
+            "provider-b",
+        )
+        .unwrap();
+
+        assert!(db
+            .get_session_provider_route("codex", "session-1")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn changing_project_force_model_resets_session_routes() {
+        let db = Database::memory().expect("create memory db");
+        db.upsert_project_provider_route(
+            "c:/workspace/demo",
+            "C:/workspace/demo",
+            "codex",
+            "provider-a",
+        )
+        .unwrap();
+        db.upsert_session_provider_route(
+            "codex",
+            "session-1",
+            "c:/workspace/demo",
+            Some("provider-a"),
+            None,
+        )
+        .unwrap();
+
+        db.set_project_force_model_route("c:/workspace/demo", "codex", true, Some("gpt-5.6"))
+            .unwrap();
+
+        assert!(db
+            .get_session_provider_route("codex", "session-1")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn resolved_session_route_has_priority_over_project_route() {
+        use crate::provider::Provider;
+
+        let db = Database::memory().expect("create memory db");
+        db.save_provider(
+            "codex",
+            &Provider::with_id(
+                "session-provider".to_string(),
+                "Session Provider".to_string(),
+                serde_json::json!({}),
+                None,
+            ),
+        )
+        .unwrap();
+        db.upsert_project_provider_route(
+            "c:/workspace/demo",
+            "C:/workspace/demo",
+            "codex",
+            "project-provider",
+        )
+        .unwrap();
+        db.upsert_session_provider_route(
+            "codex",
+            "session-1",
+            "c:/workspace/demo",
+            Some("session-provider"),
+            Some("gpt-5.6"),
+        )
+        .unwrap();
+
+        let resolved = resolve_route_override(&db, "codex", "codex_session-1")
+            .unwrap()
+            .expect("session route should resolve");
+
+        assert_eq!(resolved.provider_id.as_deref(), Some("session-provider"));
+        assert_eq!(resolved.force_model.as_deref(), Some("gpt-5.6"));
+    }
+
+    #[test]
+    fn session_model_override_inherits_project_provider_without_history_lookup() {
+        use crate::provider::Provider;
+
+        let db = Database::memory().expect("create memory db");
+        db.save_provider(
+            "codex",
+            &Provider::with_id(
+                "project-provider".to_string(),
+                "Project Provider".to_string(),
+                serde_json::json!({}),
+                None,
+            ),
+        )
+        .unwrap();
+        db.upsert_project_provider_route(
+            "c:/workspace/demo",
+            "C:/workspace/demo",
+            "codex",
+            "project-provider",
+        )
+        .unwrap();
+        db.upsert_session_provider_route(
+            "codex",
+            "session-1",
+            "c:/workspace/demo",
+            None,
+            Some("gpt-5.6"),
+        )
+        .unwrap();
+
+        let resolved = resolve_route_override(&db, "codex", "session-1")
+            .unwrap()
+            .expect("session model override should resolve");
+
+        assert_eq!(resolved.provider_id.as_deref(), Some("project-provider"));
+        assert_eq!(resolved.force_model.as_deref(), Some("gpt-5.6"));
     }
 
     #[test]

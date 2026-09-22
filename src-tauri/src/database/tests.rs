@@ -378,6 +378,28 @@ fn schema_migration_v4_adds_pricing_model_columns() {
 }
 
 #[test]
+fn schema_migration_v21_adds_session_provider_routes() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+    Database::set_user_version(&conn, 21).expect("set user_version=21");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("apply migrations");
+
+    let table_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'session_provider_routes'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query session routes table");
+    assert_eq!(table_count, 1);
+    assert_eq!(
+        Database::get_user_version(&conn).expect("version after migration"),
+        SCHEMA_VERSION
+    );
+}
+
+#[test]
 fn migration_v10_to_v11_rebuilds_rollups_with_request_model_dimension() {
     let conn = Connection::open_in_memory().expect("open memory db");
 

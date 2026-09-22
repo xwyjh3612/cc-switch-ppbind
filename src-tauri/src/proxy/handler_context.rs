@@ -64,9 +64,9 @@ pub struct RequestContext {
     pub session_id: String,
     /// Session ID 是否由客户端提供。生成的 UUID 不能作为上游缓存 key，否则每个请求都会换 key。
     pub session_client_provided: bool,
-    /// 是否命中了项目级供应商覆盖。
-    pub project_route_override: bool,
-    /// 项目级强制路由模型；仅在该项目显式开启时生效。
+    /// 是否命中了会话级或项目级路由覆盖。
+    pub route_override: bool,
+    /// 会话级或项目级强制路由模型；仅在显式开启时生效。
     pub force_model: Option<String>,
     /// 整流器配置
     pub rectifier_config: RectifierConfig,
@@ -134,17 +134,17 @@ impl RequestContext {
         );
 
         // 使用共享的 ProviderRouter 选择 Provider（熔断器状态跨请求保持）。
-        // 项目覆盖只影响本次请求，不修改全局 current provider。
-        let project_override =
+        // 会话/项目覆盖只影响本次请求，不修改全局 current provider。
+        let route_override =
             crate::project_manager::resolve_route_override(&state.db, app_type_str, &session_id)
                 .map_err(|e| ProxyError::DatabaseError(e.to_string()))?;
-        let project_route_override = project_override.is_some();
-        let force_model = project_override
+        let route_override_active = route_override.is_some();
+        let force_model = route_override
             .as_ref()
             .and_then(|route| route.force_model.clone());
-        let providers = match project_override
+        let providers = match route_override
             .as_ref()
-            .map(|route| route.provider_id.as_str())
+            .and_then(|route| route.provider_id.as_deref())
         {
             Some(provider_id) => {
                 state
@@ -187,7 +187,7 @@ impl RequestContext {
             app_type,
             session_id,
             session_client_provided: session_result.client_provided,
-            project_route_override,
+            route_override: route_override_active,
             force_model,
             rectifier_config,
             optimizer_config,
@@ -261,7 +261,7 @@ impl RequestContext {
             self.copilot_optimizer_config.clone(),
             max_retries,
         )
-        .with_project_route_override(self.project_route_override)
+        .with_route_override(self.route_override)
         .with_force_model(self.force_model.clone())
     }
 
