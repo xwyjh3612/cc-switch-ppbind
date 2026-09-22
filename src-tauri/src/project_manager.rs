@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
+use std::time::{Duration, Instant};
 
 use crate::database::{Database, ProjectProviderRoute, SessionProviderRoute};
 use crate::error::AppError;
@@ -111,39 +112,84 @@ pub struct ProjectGroup {
     pub sessions: Vec<SessionMeta>,
 }
 
-static SESSION_PROJECT_CACHE: LazyLock<RwLock<HashMap<(String, String), String>>> =
+#[derive(Clone)]
+struct CachedSessionProject {
+    project_dir: Option<String>,
+    expires_at: Instant,
+}
+
+static SESSION_PROJECT_CACHE: LazyLock<RwLock<HashMap<(String, String), CachedSessionProject>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+const SESSION_PROJECT_POSITIVE_TTL: Duration = Duration::from_secs(30 * 60);
+const SESSION_PROJECT_NEGATIVE_TTL: Duration = Duration::from_secs(5);
 
 /// Resolve the project directory for a client-provided session ID.
 ///
-/// This is intentionally best-effort. The first request of a new session may
-/// arrive before its local history metadata is flushed; callers should fall
-/// back to the global provider in that case.
+/// Codex stores the authoritative `thread_id -> cwd` mapping in its state DB
+/// before sending the first upstream request. Prefer that lookup over scanning
+/// rollout files, which may not have been flushed yet. Negative lookups are
+/// cached briefly so a burst of sub-requests does not repeatedly scan history.
 pub fn lookup_session_project_dir(app_type: &str, session_id: &str) -> Option<String> {
     if session_id.trim().is_empty() || !matches!(app_type, "codex" | "claude") {
         return None;
     }
 
-    let cache_key = (app_type.to_string(), session_id.to_string());
+    let lookup_id = if app_type == "codex" {
+        session_id.strip_prefix("codex_").unwrap_or(session_id)
+    } else {
+        session_id
+    };
+    let cache_key = (app_type.to_string(), lookup_id.to_string());
     if let Ok(cache) = SESSION_PROJECT_CACHE.read() {
-        if let Some(project_dir) = cache.get(&cache_key) {
-            return Some(project_dir.clone());
+        if let Some(entry) = cache.get(&cache_key) {
+            if Instant::now() < entry.expires_at {
+                return entry.project_dir.clone();
+            }
         }
     }
 
-    let lookup_id = session_id.strip_prefix("codex_").unwrap_or(session_id);
-    let project_dir = crate::session_manager::scan_sessions()
-        .into_iter()
-        .find(|session| session.provider_id == app_type && session.session_id == lookup_id)
-        .and_then(|session| session.project_dir);
-    if let Some(project_dir) = project_dir.as_ref() {
-        if let Ok(mut cache) = SESSION_PROJECT_CACHE.write() {
-            cache.insert(cache_key, project_dir.clone());
-        }
+    let project_dir = lookup_session_project_dir_uncached(app_type, lookup_id);
+    let ttl = if project_dir.is_some() {
+        SESSION_PROJECT_POSITIVE_TTL
+    } else {
+        SESSION_PROJECT_NEGATIVE_TTL
+    };
+    if let Ok(mut cache) = SESSION_PROJECT_CACHE.write() {
+        cache.insert(
+            cache_key,
+            CachedSessionProject {
+                project_dir: project_dir.clone(),
+                expires_at: Instant::now() + ttl,
+            },
+        );
     }
     project_dir
 }
 
+fn lookup_session_project_dir_uncached(app_type: &str, lookup_id: &str) -> Option<String> {
+    if app_type == "codex" {
+        let config_dir = crate::codex_config::get_codex_config_dir();
+        let config_text = crate::codex_config::read_codex_config_text().unwrap_or_default();
+        let state_db_paths = crate::codex_state_db::codex_state_db_paths(&config_dir, &config_text);
+        if let Some(cwd) =
+            crate::codex_state_db::lookup_codex_thread_cwd(&state_db_paths, lookup_id)
+        {
+            let project_dir = cwd.to_string_lossy().to_string();
+            log::debug!(
+                "Resolved Codex session {} project from state DB: {}",
+                lookup_id,
+                project_dir
+            );
+            return Some(project_dir);
+        }
+    }
+
+    crate::session_manager::scan_sessions()
+        .into_iter()
+        .find(|session| session.provider_id == app_type && session.session_id == lookup_id)
+        .and_then(|session| session.project_dir)
+}
 const LEGACY_FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options";
 const CODEX_FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options_codex";
 const CLAUDE_FORCE_MODEL_OPTIONS_SETTING_KEY: &str = "project_force_model_options_claude";
@@ -595,6 +641,14 @@ mod tests {
         assert_eq!(
             list_force_models(&db, "claude").unwrap(),
             vec!["legacy-model".to_string(), "claude-sonnet".to_string()]
+        );
+    }
+
+    #[test]
+    fn normalizes_extended_codex_cwd_for_project_lookup() {
+        assert_eq!(
+            normalize_project_path(r"\\?\D:\AiCli\conversation\测活").unwrap(),
+            "//?/d:/aicli/conversation/测活"
         );
     }
 
