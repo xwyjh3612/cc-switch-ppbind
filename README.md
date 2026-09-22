@@ -155,7 +155,7 @@ release/PPBind_3.20.3_x64-setup.exe
 
 双击安装包即可安装，默认安装到 %LOCALAPPDATA%\PPBind。
 
-PPBind 与官方 CC Switch 使用不同进程名、安装目录、数据目录和 ppbind:// 协议，可以同时安装。首次启动前必须先完全退出官方 CC Switch；PPBind 不会自动结束官方程序。退出后打开 PPBind，它会询问是否只读复制官方 CC Switch 数据，复制过程不会修改原数据库。
+PPBind 与官方 CC Switch 使用不同进程名、安装目录、数据目录和 ppbind:// 协议，可以同时安装，但不能同时运行。每次启动 PPBind 都会检查官方 CC Switch；如果官方程序仍在运行，PPBind 会阻止启动并提示先完全退出，且不会自动结束官方程序，以免中断用户正在进行的会话。退出官方程序后打开 PPBind，首次启动会询问是否只读复制官方 CC Switch 数据，复制过程不会修改原数据库。
 
 ### 本地构建并安装
 

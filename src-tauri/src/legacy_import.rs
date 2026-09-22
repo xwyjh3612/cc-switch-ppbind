@@ -1,4 +1,5 @@
-//! One-time, copy-only import from the official CC Switch data directory.
+//! Compatibility guard and one-time, copy-only import from the official CC
+//! Switch data directory.
 //!
 //! PPBind must never migrate or modify the official application's database in
 //! place. This module is intentionally run before PPBind opens its own database:
@@ -19,6 +20,33 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 const OFFICIAL_PROCESS_NAME: &str = "cc-switch.exe";
 const AUXILIARY_FILES: &[&str] = &["settings.json", "model-pricing.json"];
 
+/// Prevent PPBind from starting while the official CC Switch is running.
+///
+/// Both applications manage the same live Codex/Claude configuration and
+/// proxy settings. Running them together can cause port conflicts or requests
+/// to be routed through the wrong application.
+pub fn ensure_official_app_not_running(app: &AppHandle) -> Result<(), AppError> {
+    if !is_official_app_running()? {
+        return Ok(());
+    }
+
+    let title = localized("PPBind 无法启动", "PPBind Cannot Start");
+    let message = localized(
+        "检测到官方 CC Switch 正在运行。\n\nPPBind 与官方 CC Switch 会管理同一份 Codex / Claude 实时配置，同时运行可能导致代理端口冲突或请求路由异常。请先完全退出官方 CC Switch，然后重新打开 PPBind。\n\nPPBind 不会自动结束官方程序。",
+        "Official CC Switch is running.\n\nPPBind and official CC Switch manage the same live Codex / Claude configuration. Running both apps can cause proxy port conflicts or incorrect request routing. Please exit official CC Switch completely, then open PPBind again.\n\nPPBind will not terminate the official application.",
+    );
+    app.dialog()
+        .message(&message)
+        .title(title)
+        .kind(MessageDialogKind::Error)
+        .buttons(MessageDialogButtons::Ok)
+        .blocking_show();
+
+    Err(AppError::Message(
+        "官方 CC Switch 正在运行，已中止 PPBind 启动".to_string(),
+    ))
+}
+
 /// Import official CC Switch data on PPBind's first launch.
 ///
 /// The function is a no-op when PPBind already has a database or when no
@@ -32,23 +60,6 @@ pub fn run_if_needed(app: &AppHandle) -> Result<(), AppError> {
     let legacy_db = get_legacy_app_db_path();
     if !legacy_db.is_file() {
         return Ok(());
-    }
-
-    if is_official_app_running()? {
-        let title = localized("PPBind 首次启动", "PPBind First Launch");
-        let message = localized(
-            "检测到官方 CC Switch 正在运行。\n\n为避免读取到未落盘的数据库状态，请先完全退出官方 CC Switch，然后重新打开 PPBind。PPBind 不会自动终止官方程序。",
-            "Official CC Switch is still running.\n\nPlease exit it completely before opening PPBind again. PPBind will not terminate the official application.",
-        );
-        app.dialog()
-            .message(&message)
-            .title(title)
-            .kind(MessageDialogKind::Error)
-            .buttons(MessageDialogButtons::Ok)
-            .blocking_show();
-        return Err(AppError::Message(
-            "官方 CC Switch 正在运行，已中止首次数据导入".to_string(),
-        ));
     }
 
     let title = localized("导入官方 CC Switch 数据", "Import Official CC Switch Data");

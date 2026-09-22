@@ -456,6 +456,10 @@ pub fn run() {
             // 预先刷新 Store 覆盖配置，确保后续路径读取正确（日志/数据库等）
             app_store::refresh_app_config_dir_override(app.handle());
 
+            // PPBind 和官方 CC Switch 共用实时配置，必须保证同一时间只运行一个。
+            // 启动阶段只提示用户退出官方程序，绝不自动结束它，避免中断用户会话。
+            legacy_import::ensure_official_app_not_running(app.handle())?;
+
             // 首次启动导入官方 CC Switch 数据。必须在日志/数据库初始化前执行，
             // 并且只复制数据，绝不修改官方数据目录。
             legacy_import::run_if_needed(app.handle())?;
