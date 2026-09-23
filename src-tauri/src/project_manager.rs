@@ -325,9 +325,8 @@ struct RecentCodexModelRoute {
     force_model: Option<String>,
 }
 
-static RECENT_CODEX_MODEL_ROUTES: LazyLock<
-    RwLock<HashMap<String, RecentCodexModelRoute>>,
-> = LazyLock::new(|| RwLock::new(HashMap::new()));
+static RECENT_CODEX_MODEL_ROUTES: LazyLock<RwLock<HashMap<String, RecentCodexModelRoute>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 const RECENT_CODEX_MODEL_LIMIT: usize = 256;
 const RECENT_CODEX_MODEL_NAME_MAX_BYTES: usize = 200;

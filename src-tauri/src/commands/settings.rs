@@ -143,7 +143,9 @@ fn parse_sha256_sums(text: &str, asset_name: &str) -> Option<String> {
     })
 }
 
-async fn fetch_ppbind_latest_release_html(client: &reqwest::Client) -> Result<GithubRelease, String> {
+async fn fetch_ppbind_latest_release_html(
+    client: &reqwest::Client,
+) -> Result<GithubRelease, String> {
     let latest_url = format!("{PPBIND_RELEASES_URL}/latest");
     let response = client
         .get(&latest_url)
@@ -171,7 +173,9 @@ async fn fetch_ppbind_latest_release_html(client: &reqwest::Client) -> Result<Gi
     })
 }
 
-async fn fetch_ppbind_latest_release_api(client: &reqwest::Client) -> Result<GithubRelease, String> {
+async fn fetch_ppbind_latest_release_api(
+    client: &reqwest::Client,
+) -> Result<GithubRelease, String> {
     let api_url = format!("https://api.github.com/repos/{PPBIND_REPO}/releases/latest");
     let response = client
         .get(&api_url)
@@ -188,8 +192,8 @@ async fn fetch_ppbind_latest_release_api(client: &reqwest::Client) -> Result<Git
         .text()
         .await
         .map_err(|e| format!("读取 GitHub API 更新信息失败: {e}"))?;
-    let release: GithubApiRelease = serde_json::from_str(&body)
-        .map_err(|e| format!("解析 GitHub API 更新信息失败: {e}"))?;
+    let release: GithubApiRelease =
+        serde_json::from_str(&body).map_err(|e| format!("解析 GitHub API 更新信息失败: {e}"))?;
     let assets = release
         .assets
         .into_iter()
@@ -200,7 +204,10 @@ async fn fetch_ppbind_latest_release_api(client: &reqwest::Client) -> Result<Git
         })
         .collect::<Vec<_>>();
     if assets.is_empty() {
-        return Err(format!("PPBind {} 没有可用的 Release 文件", release.tag_name));
+        return Err(format!(
+            "PPBind {} 没有可用的 Release 文件",
+            release.tag_name
+        ));
     }
     Ok(GithubRelease {
         tag_name: release.tag_name,
@@ -213,10 +220,14 @@ async fn fetch_ppbind_latest_release() -> Result<GithubRelease, String> {
     match fetch_ppbind_latest_release_html(&client).await {
         Ok(release) => Ok(release),
         Err(html_error) => {
-            log::warn!("PPBind update check via release HTML failed: {html_error}; trying GitHub API");
+            log::warn!(
+                "PPBind update check via release HTML failed: {html_error}; trying GitHub API"
+            );
             fetch_ppbind_latest_release_api(&client)
                 .await
-                .map_err(|api_error| format!("{html_error}; GitHub API fallback failed: {api_error}"))
+                .map_err(|api_error| {
+                    format!("{html_error}; GitHub API fallback failed: {api_error}")
+                })
         }
     }
 }
@@ -247,21 +258,22 @@ async fn fetch_release_sha256(
     }
 
     let api_url = format!("https://api.github.com/repos/{PPBIND_REPO}/releases/tags/{release_tag}");
-    let body = fetch_github_text_with_accept(
-        &client,
-        &api_url,
-        "application/vnd.github+json",
-    )
-    .await?;
-    let release: GithubApiRelease = serde_json::from_str(&body)
-        .map_err(|e| format!("解析 GitHub API 校验信息失败: {e}"))?;
+    let body =
+        fetch_github_text_with_accept(&client, &api_url, "application/vnd.github+json").await?;
+    let release: GithubApiRelease =
+        serde_json::from_str(&body).map_err(|e| format!("解析 GitHub API 校验信息失败: {e}"))?;
     release
         .assets
         .iter()
         .find(|candidate| candidate.name == asset.name)
         .and_then(|candidate| candidate.digest.as_deref())
         .and_then(normalize_sha256)
-        .ok_or_else(|| format!("PPBind {release_tag} 的 API 元数据缺少 {} 的校验值", asset.name))
+        .ok_or_else(|| {
+            format!(
+                "PPBind {release_tag} 的 API 元数据缺少 {} 的校验值",
+                asset.name
+            )
+        })
 }
 
 async fn fetch_github_text_with_accept(
