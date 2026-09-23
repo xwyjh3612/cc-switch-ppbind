@@ -277,7 +277,7 @@ fn update_asset_score(name: &str) -> Option<u8> {
     None
 }
 
-fn select_update_asset<'a>(assets: &'a [GithubReleaseAsset]) -> Option<&'a GithubReleaseAsset> {
+fn select_update_asset(assets: &[GithubReleaseAsset]) -> Option<&GithubReleaseAsset> {
     assets
         .iter()
         .filter_map(|asset| update_asset_score(&asset.name).map(|score| (score, asset)))

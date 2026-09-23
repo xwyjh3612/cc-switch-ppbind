@@ -6,6 +6,7 @@
 //! when set, a second DB lives there. Both history migration and the session
 //! list's title lookup need the same resolution, so it lives here once.
 
+use std::cmp::Reverse;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -76,7 +77,7 @@ pub(crate) fn codex_log_db_paths(config_dir: &Path, config_text: &str) -> Vec<Pa
         }
     }
 
-    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    candidates.sort_by_key(|(version, _)| Reverse(*version));
     let mut paths = Vec::new();
     for (_, path) in candidates {
         push_unique_path(&mut paths, path);

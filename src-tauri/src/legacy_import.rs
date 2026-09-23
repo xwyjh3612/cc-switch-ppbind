@@ -24,6 +24,7 @@ use std::sync::{
 use std::time::Duration;
 use tauri::AppHandle;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+#[cfg(target_os = "windows")]
 const OFFICIAL_PROCESS_NAME: &str = "cc-switch.exe";
 const AUXILIARY_FILES: &[&str] = &["settings.json", "model-pricing.json"];
 const IMPORT_CANCELLED_MESSAGE: &str = "PPBind 数据导入已取消";
@@ -41,6 +42,7 @@ enum ImportStage {
     Finished = 6,
 }
 impl ImportStage {
+    #[cfg(any(target_os = "windows", test))]
     fn from_code(code: u32) -> Self {
         match code {
             1 => Self::CopyingDatabase,
@@ -52,6 +54,7 @@ impl ImportStage {
             _ => Self::Preparing,
         }
     }
+    #[cfg(target_os = "windows")]
     fn label(self, zh: bool) -> &'static str {
         match (self, zh) {
             (Self::Preparing, true) => "正在准备导入",
@@ -100,6 +103,7 @@ impl ImportProgress {
             Ok(())
         }
     }
+    #[cfg(test)]
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
     }
@@ -108,9 +112,11 @@ impl ImportProgress {
         self.stage
             .store(ImportStage::Finished as u32, Ordering::SeqCst);
     }
+    #[cfg(test)]
     fn percent(&self) -> u32 {
         self.percent.load(Ordering::SeqCst)
     }
+    #[cfg(test)]
     fn stage(&self) -> ImportStage {
         ImportStage::from_code(self.stage.load(Ordering::SeqCst))
     }
@@ -182,7 +188,7 @@ pub fn run_if_needed(app: &AppHandle) -> Result<bool, AppError> {
         Err(error) => {
             eprintln!("PPBind first-run import failed: {error}");
             app.dialog()
-                .message(&localized(
+                .message(localized(
                     "导入官方 CC Switch 数据失败。\n\nPPBind 尚未创建自己的数据库，也没有修改官方数据。请确认官方 CC Switch 已退出后重试。",
                     "Failed to import official CC Switch data.\n\nPPBind did not create its own database and did not modify the official data. Please make sure official CC Switch is closed and try again.",
                 ))
@@ -253,6 +259,7 @@ fn import_legacy_data_with_progress(
 }
 /// Use SQLite online backup so committed WAL contents are included. A raw file
 /// copy would be unsafe and could produce a torn snapshot.
+#[cfg(test)]
 pub(crate) fn copy_database_snapshot(
     source_path: &Path,
     destination_path: &Path,
@@ -794,19 +801,21 @@ fn run_import_with_progress(
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
-    let mut config = TASKDIALOGCONFIG::default();
-    config.cbSize = std::mem::size_of::<TASKDIALOGCONFIG>() as u32;
-    config.hwndParent = std::ptr::null_mut();
-    config.hInstance = std::ptr::null_mut();
-    config.dwFlags = TDF_SHOW_PROGRESS_BAR | TDF_CALLBACK_TIMER | TDF_SIZE_TO_CONTENT;
     // Import is intentionally not user-cancellable. It normally completes in
     // around a second and must close itself before PPBind continues startup.
-    config.dwCommonButtons = 0;
-    config.pszWindowTitle = title.as_ptr();
-    config.pszMainInstruction = main_instruction.as_ptr();
-    config.pszContent = initial_content.as_ptr();
-    config.pfCallback = Some(callback);
-    config.lpCallbackData = (&state as *const TaskDialogState) as isize;
+    let config = TASKDIALOGCONFIG {
+        cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
+        hwndParent: std::ptr::null_mut(),
+        hInstance: std::ptr::null_mut(),
+        dwFlags: TDF_SHOW_PROGRESS_BAR | TDF_CALLBACK_TIMER | TDF_SIZE_TO_CONTENT,
+        dwCommonButtons: 0,
+        pszWindowTitle: title.as_ptr(),
+        pszMainInstruction: main_instruction.as_ptr(),
+        pszContent: initial_content.as_ptr(),
+        pfCallback: Some(callback),
+        lpCallbackData: (&state as *const TaskDialogState) as isize,
+        ..Default::default()
+    };
     let mut button = 0;
     let dialog_result = unsafe {
         TaskDialogIndirect(

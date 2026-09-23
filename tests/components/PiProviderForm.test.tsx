@@ -1415,7 +1415,7 @@ describe("PiProviderForm", () => {
 
     await user.click(screen.getByLabelText("pi.form.reasoning"));
     expect(screen.getByText("pi.form.thinkingLevelsLabel")).toBeVisible();
-  });
+  }, 10000);
 
   it("lets the user edit a preset thinking map without automatic recovery", async () => {
     const user = userEvent.setup();

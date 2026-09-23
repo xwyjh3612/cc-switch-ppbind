@@ -723,7 +723,7 @@ fn find_project_path_for_workspaces(
 
             let is_better = best_match
                 .as_ref()
-                .map_or(true, |(best_len, _)| route_key.len() > *best_len);
+                .is_none_or(|(best_len, _)| route_key.len() > *best_len);
             if is_better {
                 best_match = Some((route_key.len(), route.project_path_key.clone()));
             }
