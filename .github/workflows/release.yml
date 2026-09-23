@@ -1,9 +1,11 @@
 name: Release
 
+# Upstream CC Switch release workflow. PPBind publishes through the Windows
+# release build and .github/workflows/build-macos.yml instead. Keep this manual
+# only so tag pushes cannot fail on upstream signing secrets or overwrite PPBind
+# release assets with CC-Switch-named packages.
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write

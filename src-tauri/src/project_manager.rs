@@ -4,7 +4,7 @@
 //! session. The database stores only explicit provider overrides; all other
 //! requests continue to use the existing global provider selection.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, Instant};
@@ -323,15 +323,12 @@ pub fn get_recent_codex_activity(
 struct RecentCodexModelRoute {
     provider_id: String,
     force_model: Option<String>,
-    recorded_at: Instant,
 }
 
 static RECENT_CODEX_MODEL_ROUTES: LazyLock<
-    RwLock<HashMap<String, VecDeque<RecentCodexModelRoute>>>,
+    RwLock<HashMap<String, RecentCodexModelRoute>>,
 > = LazyLock::new(|| RwLock::new(HashMap::new()));
 
-const RECENT_CODEX_MODEL_ROUTE_TTL: Duration = Duration::from_secs(10 * 60);
-const RECENT_CODEX_MODEL_ROUTE_LIMIT: usize = 5;
 const RECENT_CODEX_MODEL_LIMIT: usize = 256;
 const RECENT_CODEX_MODEL_NAME_MAX_BYTES: usize = 200;
 
@@ -347,31 +344,11 @@ fn normalize_recent_codex_model(model: &str) -> Option<String> {
     Some(model.to_lowercase())
 }
 
-fn same_recent_codex_model_route(
-    left: &RecentCodexModelRoute,
-    provider_id: &str,
-    force_model: Option<&str>,
-) -> bool {
-    left.provider_id == provider_id && left.force_model.as_deref() == force_model
-}
-
-fn prune_recent_codex_model_routes(
-    routes: &mut HashMap<String, VecDeque<RecentCodexModelRoute>>,
-    now: Instant,
-) {
-    for records in routes.values_mut() {
-        records.retain(|record| {
-            now.duration_since(record.recorded_at) <= RECENT_CODEX_MODEL_ROUTE_TTL
-        });
-    }
-    routes.retain(|_, records| !records.is_empty());
-}
-
 /// Remember the effective Codex route for a client model.
 ///
-/// This is deliberately separate from the short-lived prompt cache: prompt
-/// matching must stay narrow, while anonymous helper threads may arrive much
-/// later and still need a recent model-to-route fallback.
+/// Only the most recently effective route is kept for each model. For
+/// anonymous helper threads, succeeding is more important than avoiding an
+/// occasional cross-project fallback.
 pub fn record_recent_codex_model_route(model: &str, provider_id: &str, force_model: Option<&str>) {
     let Some(model) = normalize_recent_codex_model(model) else {
         return;
@@ -385,42 +362,25 @@ pub fn record_recent_codex_model_route(model: &str, provider_id: &str, force_mod
         .filter(|model| !model.is_empty())
         .map(str::to_string);
 
-    let now = Instant::now();
     let Ok(mut routes) = RECENT_CODEX_MODEL_ROUTES.write() else {
         return;
     };
-    prune_recent_codex_model_routes(&mut routes, now);
-
     if !routes.contains_key(&model) && routes.len() >= RECENT_CODEX_MODEL_LIMIT {
-        if let Some(oldest_model) = routes
-            .iter()
-            .min_by_key(|(_, records)| records.back().map(|record| record.recorded_at))
-            .map(|(model, _)| model.clone())
-        {
-            routes.remove(&oldest_model);
-        }
+        return;
     }
-
-    let records = routes.entry(model).or_default();
-    records.retain(|record| {
-        !same_recent_codex_model_route(record, provider_id, force_model.as_deref())
-    });
-    records.push_front(RecentCodexModelRoute {
-        provider_id: provider_id.to_string(),
-        force_model,
-        recorded_at: now,
-    });
-    while records.len() > RECENT_CODEX_MODEL_ROUTE_LIMIT {
-        records.pop_back();
-    }
+    routes.insert(
+        model,
+        RecentCodexModelRoute {
+            provider_id: provider_id.to_string(),
+            force_model,
+        },
+    );
 }
 
-/// Resolve a Codex route from the recent model-to-route cache.
+/// Resolve the latest effective Codex route for a client model.
 ///
-/// Entries are newest-first. The first still-valid route is used even when
-/// several projects recently used the same model: for anonymous helper threads,
-/// succeeding is more important than avoiding an occasional cross-project
-/// fallback.
+/// The cached provider is validated before use. A route whose provider no
+/// longer exists is removed so it cannot keep failing later requests.
 pub fn resolve_recent_codex_model_route(
     db: &Database,
     model: &str,
@@ -429,31 +389,37 @@ pub fn resolve_recent_codex_model_route(
         return Ok(None);
     };
 
-    let now = Instant::now();
-    let records = {
-        let Ok(mut routes) = RECENT_CODEX_MODEL_ROUTES.write() else {
+    let record = {
+        let Ok(routes) = RECENT_CODEX_MODEL_ROUTES.read() else {
             return Ok(None);
         };
-        prune_recent_codex_model_routes(&mut routes, now);
-        routes.get(&model).cloned().unwrap_or_default()
+        routes.get(&model).cloned()
+    };
+    let Some(record) = record else {
+        return Ok(None);
     };
 
-    for record in records {
-        if db
-            .get_provider_by_id(&record.provider_id, "codex")?
-            .is_none()
-        {
-            continue;
+    if db
+        .get_provider_by_id(&record.provider_id, "codex")?
+        .is_none()
+    {
+        if let Ok(mut routes) = RECENT_CODEX_MODEL_ROUTES.write() {
+            let should_remove = routes.get(&model).is_some_and(|current| {
+                current.provider_id == record.provider_id
+                    && current.force_model == record.force_model
+            });
+            if should_remove {
+                routes.remove(&model);
+            }
         }
-
-        return Ok(Some(RouteOverride {
-            provider_id: Some(record.provider_id),
-            force_model: record.force_model,
-            project_path_key: None,
-        }));
+        return Ok(None);
     }
 
-    Ok(None)
+    Ok(Some(RouteOverride {
+        provider_id: Some(record.provider_id),
+        force_model: record.force_model,
+        project_path_key: None,
+    }))
 }
 
 fn codex_prompt_matches(candidate: &str, prompt: &str) -> bool {
@@ -888,17 +854,6 @@ mod tests {
         }
     }
 
-    fn age_recent_codex_model_routes(age: Duration) {
-        if let Ok(mut routes) = RECENT_CODEX_MODEL_ROUTES.write() {
-            let recorded_at = Instant::now() - age;
-            for records in routes.values_mut() {
-                for record in records {
-                    record.recorded_at = recorded_at;
-                }
-            }
-        }
-    }
-
     fn session(
         provider_id: &str,
         session_id: &str,
@@ -1249,7 +1204,7 @@ mod tests {
     }
 
     #[test]
-    fn recent_codex_model_route_prefers_latest_available() {
+    fn recent_codex_model_route_keeps_only_the_latest_route() {
         let _guard = RECENT_CODEX_TEST_LOCK.lock().unwrap();
         clear_recent_codex_model_routes();
         let db = Database::memory().expect("create memory db");
@@ -1280,53 +1235,27 @@ mod tests {
         assert_eq!(route.provider_id.as_deref(), Some("provider-b"));
         assert!(route.force_model.is_none());
 
-        age_recent_codex_model_routes(Duration::from_secs(60));
+        record_recent_codex_model_route("gpt-5.6-sol", "provider-a", None);
         let route = resolve_recent_codex_model_route(&db, "gpt-5.6-sol")
             .unwrap()
-            .expect("latest valid route should remain available after 30 seconds");
-        assert_eq!(route.provider_id.as_deref(), Some("provider-b"));
+            .expect("newest route should replace the previous one");
+        assert_eq!(route.provider_id.as_deref(), Some("provider-a"));
         assert!(route.force_model.is_none());
 
-        clear_recent_codex_model_routes();
-        record_recent_codex_model_route("gpt-5.6-sol", "provider-a", None);
-        age_recent_codex_model_routes(Duration::from_secs(60));
-        assert_eq!(
-            resolve_recent_codex_model_route(&db, "gpt-5.6-sol")
-                .unwrap()
-                .and_then(|route| route.provider_id)
-                .as_deref(),
-            Some("provider-a")
-        );
+        {
+            let routes = RECENT_CODEX_MODEL_ROUTES.read().unwrap();
+            assert_eq!(routes.len(), 1);
+            assert_eq!(routes.get("gpt-5.6-sol").unwrap().provider_id, "provider-a");
+        }
 
-        age_recent_codex_model_routes(RECENT_CODEX_MODEL_ROUTE_TTL + Duration::from_secs(1));
+        record_recent_codex_model_route("gpt-5.6-sol", "missing-provider", None);
         assert!(resolve_recent_codex_model_route(&db, "gpt-5.6-sol")
             .unwrap()
             .is_none());
-        clear_recent_codex_model_routes();
-    }
-
-    #[test]
-    fn recent_codex_model_route_deduplicates_and_caps_per_model() {
-        let _guard = RECENT_CODEX_TEST_LOCK.lock().unwrap();
-        clear_recent_codex_model_routes();
-
-        record_recent_codex_model_route("gpt-5.6-sol", "provider-a", None);
-        record_recent_codex_model_route("gpt-5.6-sol", "provider-a", None);
-        {
-            let routes = RECENT_CODEX_MODEL_ROUTES.read().unwrap();
-            assert_eq!(routes.get("gpt-5.6-sol").unwrap().len(), 1);
-        }
-
-        for index in 2..=6 {
-            record_recent_codex_model_route("gpt-5.6-sol", &format!("provider-{index}"), None);
-        }
-
-        let routes = RECENT_CODEX_MODEL_ROUTES.read().unwrap();
-        let records = routes.get("gpt-5.6-sol").unwrap();
-        assert_eq!(records.len(), RECENT_CODEX_MODEL_ROUTE_LIMIT);
-        assert_eq!(records.front().unwrap().provider_id, "provider-6");
-        assert_eq!(records.back().unwrap().provider_id, "provider-2");
-        drop(routes);
+        assert!(!RECENT_CODEX_MODEL_ROUTES
+            .read()
+            .unwrap()
+            .contains_key("gpt-5.6-sol"));
         clear_recent_codex_model_routes();
     }
 

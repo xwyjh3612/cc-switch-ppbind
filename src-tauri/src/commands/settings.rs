@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
 use futures::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -17,12 +17,26 @@ const PPBIND_UPDATE_TIMEOUT: Duration = Duration::from_secs(30);
 struct GithubReleaseAsset {
     name: String,
     browser_download_url: String,
+    sha256: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct GithubRelease {
     tag_name: String,
     assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubApiRelease {
+    tag_name: String,
+    assets: Vec<GithubApiAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubApiAsset {
+    name: String,
+    browser_download_url: String,
+    digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -99,28 +113,37 @@ fn parse_release_assets(html: &str, release_tag: &str) -> Vec<GithubReleaseAsset
             Some(GithubReleaseAsset {
                 name,
                 browser_download_url,
+                sha256: None,
             })
         })
         .collect()
 }
 
+fn normalize_sha256(value: &str) -> Option<String> {
+    let value = value
+        .trim()
+        .strip_prefix("sha256:")
+        .unwrap_or(value.trim())
+        .trim();
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(value.to_ascii_lowercase())
+}
+
 fn parse_sha256_sums(text: &str, asset_name: &str) -> Option<String> {
     text.lines().find_map(|line| {
         let mut parts = line.split_whitespace();
-        let digest = parts.next()?.trim();
+        let digest = parts.next()?;
         let name = parts.next()?.trim_start_matches('*');
-        if name != asset_name
-            || digest.len() != 64
-            || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
+        if name != asset_name {
             return None;
         }
-        Some(digest.to_ascii_lowercase())
+        normalize_sha256(digest)
     })
 }
 
-async fn fetch_ppbind_latest_release() -> Result<GithubRelease, String> {
-    let client = build_update_client()?;
+async fn fetch_ppbind_latest_release_html(client: &reqwest::Client) -> Result<GithubRelease, String> {
     let latest_url = format!("{PPBIND_RELEASES_URL}/latest");
     let response = client
         .get(&latest_url)
@@ -136,7 +159,7 @@ async fn fetch_ppbind_latest_release() -> Result<GithubRelease, String> {
         .ok_or_else(|| "无法从 GitHub Release 地址解析版本号".to_string())?;
 
     let assets_url = format!("{PPBIND_RELEASES_URL}/expanded_assets/{release_tag}");
-    let assets_html = fetch_github_text(&client, &assets_url).await?;
+    let assets_html = fetch_github_text(client, &assets_url).await?;
     let assets = parse_release_assets(&assets_html, &release_tag);
     if assets.is_empty() {
         return Err(format!("PPBind {release_tag} 没有可用的 Release 文件"));
@@ -148,14 +171,119 @@ async fn fetch_ppbind_latest_release() -> Result<GithubRelease, String> {
     })
 }
 
-async fn fetch_release_sha256(release_tag: &str, asset_name: &str) -> Result<String, String> {
+async fn fetch_ppbind_latest_release_api(client: &reqwest::Client) -> Result<GithubRelease, String> {
+    let api_url = format!("https://api.github.com/repos/{PPBIND_REPO}/releases/latest");
+    let response = client
+        .get(&api_url)
+        .header("User-Agent", "PPBind")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("连接 GitHub API 检查 PPBind 更新失败: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("GitHub API 检查 PPBind 更新失败（HTTP {status}）"));
+    }
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("读取 GitHub API 更新信息失败: {e}"))?;
+    let release: GithubApiRelease = serde_json::from_str(&body)
+        .map_err(|e| format!("解析 GitHub API 更新信息失败: {e}"))?;
+    let assets = release
+        .assets
+        .into_iter()
+        .map(|asset| GithubReleaseAsset {
+            name: asset.name,
+            browser_download_url: asset.browser_download_url,
+            sha256: asset.digest.as_deref().and_then(normalize_sha256),
+        })
+        .collect::<Vec<_>>();
+    if assets.is_empty() {
+        return Err(format!("PPBind {} 没有可用的 Release 文件", release.tag_name));
+    }
+    Ok(GithubRelease {
+        tag_name: release.tag_name,
+        assets,
+    })
+}
+
+async fn fetch_ppbind_latest_release() -> Result<GithubRelease, String> {
+    let client = build_update_client()?;
+    match fetch_ppbind_latest_release_html(&client).await {
+        Ok(release) => Ok(release),
+        Err(html_error) => {
+            log::warn!("PPBind update check via release HTML failed: {html_error}; trying GitHub API");
+            fetch_ppbind_latest_release_api(&client)
+                .await
+                .map_err(|api_error| format!("{html_error}; GitHub API fallback failed: {api_error}"))
+        }
+    }
+}
+
+async fn fetch_release_sha256(
+    release_tag: &str,
+    asset: &GithubReleaseAsset,
+) -> Result<String, String> {
+    if let Some(sha256) = &asset.sha256 {
+        return Ok(sha256.clone());
+    }
+
     let client = build_update_client()?;
     let checksum_url =
         format!("https://github.com/{PPBIND_REPO}/releases/download/{release_tag}/SHA256SUMS.txt");
-    let checksum_text = fetch_github_text(&client, &checksum_url).await?;
-    parse_sha256_sums(&checksum_text, asset_name).ok_or_else(|| {
-        format!("PPBind {release_tag} 的 SHA256SUMS.txt 中缺少 {asset_name} 的校验值")
-    })
+    match fetch_github_text(&client, &checksum_url).await {
+        Ok(checksum_text) => {
+            if let Some(sha256) = parse_sha256_sums(&checksum_text, &asset.name) {
+                return Ok(sha256);
+            }
+        }
+        Err(checksum_error) => {
+            log::warn!(
+                "PPBind checksum fetch failed for {}: {checksum_error}; trying GitHub API",
+                asset.name
+            );
+        }
+    }
+
+    let api_url = format!("https://api.github.com/repos/{PPBIND_REPO}/releases/tags/{release_tag}");
+    let body = fetch_github_text_with_accept(
+        &client,
+        &api_url,
+        "application/vnd.github+json",
+    )
+    .await?;
+    let release: GithubApiRelease = serde_json::from_str(&body)
+        .map_err(|e| format!("解析 GitHub API 校验信息失败: {e}"))?;
+    release
+        .assets
+        .iter()
+        .find(|candidate| candidate.name == asset.name)
+        .and_then(|candidate| candidate.digest.as_deref())
+        .and_then(normalize_sha256)
+        .ok_or_else(|| format!("PPBind {release_tag} 的 API 元数据缺少 {} 的校验值", asset.name))
+}
+
+async fn fetch_github_text_with_accept(
+    client: &reqwest::Client,
+    url: &str,
+    accept: &str,
+) -> Result<String, String> {
+    let response = client
+        .get(url)
+        .header("User-Agent", "PPBind")
+        .header("Accept", accept)
+        .send()
+        .await
+        .map_err(|e| format!("连接 GitHub API 失败: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("GitHub API 请求失败（HTTP {status}）"));
+    }
+    response
+        .text()
+        .await
+        .map_err(|e| format!("读取 GitHub API 响应失败: {e}"))
 }
 fn parse_version(value: &str) -> Option<(u64, u64, u64, Option<String>)> {
     let value = value.trim().trim_start_matches(['v', 'V']);
@@ -299,7 +427,7 @@ async fn resolve_ppbind_update() -> Result<Option<PpbindUpdateInfo>, String> {
             std::env::consts::OS
         )
     })?;
-    let sha256 = fetch_release_sha256(&release.tag_name, &asset.name).await?;
+    let sha256 = fetch_release_sha256(&release.tag_name, asset).await?;
     let release_tag = release.tag_name.clone();
 
     Ok(Some(PpbindUpdateInfo {
@@ -1108,10 +1236,12 @@ mod ppbind_update_tests {
             GithubReleaseAsset {
                 name: "ppbind.exe".to_string(),
                 browser_download_url: "https://example.com/ppbind.exe".to_string(),
+                sha256: None,
             },
             GithubReleaseAsset {
                 name: "PPBind_3.20.4_x64-setup.exe".to_string(),
                 browser_download_url: "https://example.com/setup.exe".to_string(),
+                sha256: None,
             },
         ];
 

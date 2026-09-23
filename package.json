@@ -1,6 +1,6 @@
 {
   "name": "cc-switch-ppbind",
-  "version": "3.20.4",
+  "version": "3.20.5",
   "description": "CC Switch fork with project-level provider binding and forced model routing",
   "type": "module",
   "scripts": {

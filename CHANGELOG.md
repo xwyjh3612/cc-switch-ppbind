@@ -5,6 +5,13 @@ All notable changes to CC Switch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.20.5] - 2026-09-23
+
+### Fixed
+
+- Anonymous Codex helper threads now keep only the latest effective route for each requested model. The 10-minute TTL and five-route history were removed; a new successful route replaces the previous one, and a stale provider is discarded automatically.
+- PPBind update checks now fall back to the GitHub Releases API and its asset digest when the release web page or `SHA256SUMS.txt` is temporarily unavailable, avoiding spurious HTTP 404 failures.
+
 ## [3.20.4] - 2026-09-23
 
 ### Fixed
