@@ -9,7 +9,7 @@
 </div>
 
 <p align="center">
-  <a href="https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/PPBind_3.20.3_x64-setup.exe"><strong>下载最新版 Windows x64 安装包</strong></a>
+  <a href="https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/PPBind_3.20.4_x64-setup.exe"><strong>下载最新版 Windows x64 安装包</strong></a>
   ·
   <a href="https://github.com/xwyjh3612/cc-switch-ppbind/releases">查看全部版本</a>
 </p>
@@ -155,13 +155,13 @@ session_id / x-session-id
 
 ### 双击安装
 
-- [直接下载最新版 Windows x64 安装包](https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/PPBind_3.20.3_x64-setup.exe)
+- [直接下载最新版 Windows x64 安装包](https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/PPBind_3.20.4_x64-setup.exe)
 - [查看 GitHub Releases 中的全部版本](https://github.com/xwyjh3612/cc-switch-ppbind/releases)
 
 构建后的 Windows 安装包位于：
 
 ```text
-release/PPBind_3.20.3_x64-setup.exe
+release/PPBind_3.20.4_x64-setup.exe
 ```
 
 双击安装包即可安装，默认安装到 %LOCALAPPDATA%\PPBind。

@@ -1,6 +1,6 @@
 [package]
 name = "ppbind"
-version = "3.20.3"
+version = "3.20.4"
 description = "PPBind: project-level provider binding and forced model routing for Codex and Claude Code"
 authors = ["Jason Young"]
 license = "MIT"

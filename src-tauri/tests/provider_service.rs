@@ -2251,9 +2251,12 @@ wire_api = "responses"
 
     let live_config =
         std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
+    let listen_port = futures::executor::block_on(state.proxy_service.get_config())
+        .expect("read proxy config")
+        .listen_port;
     assert!(
-        live_config.contains("http://127.0.0.1:15722/v1"),
-        "live config should remain pointed at the local proxy"
+        live_config.contains(&format!("http://127.0.0.1:{listen_port}/v1")),
+        "live config should remain pointed at the local proxy (actual: {live_config})"
     );
     assert!(
         live_config.contains("PROXY_MANAGED"),

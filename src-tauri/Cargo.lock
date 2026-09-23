@@ -3909,7 +3909,7 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "ppbind"
-version = "3.20.3"
+version = "3.20.4"
 dependencies = [
  "anyhow",
  "arboard",

@@ -333,20 +333,25 @@ mod tests {
             [],
         )
         .expect("create logs table");
+        let raw_cwd = if cfg!(windows) {
+            r"D:\AiCli\conversation\测活"
+        } else {
+            "/tmp/ppbind-conversation/测活"
+        };
+        let log_body = format!(
+            "run_sampling_request{{turn_id=t1 model=gpt-5.6-sol cwd={raw_cwd}}}:try_run_sampling_request"
+        );
         conn.execute(
             "INSERT INTO logs (id, ts, ts_nanos, thread_id, feedback_log_body)
              VALUES (1, 1, 0, ?1, ?2)",
-            (
-                "ephemeral-thread",
-                r"run_sampling_request{turn_id=t1 model=gpt-5.6-sol cwd=D:\AiCli\conversation\测活}:try_run_sampling_request",
-            ),
+            ("ephemeral-thread", log_body),
         )
         .expect("insert log");
         drop(conn);
 
         assert_eq!(
             lookup_codex_thread_cwd_from_logs(std::slice::from_ref(&db_path), "ephemeral-thread"),
-            Some(PathBuf::from(r"D:\AiCli\conversation\测活"))
+            Some(PathBuf::from(raw_cwd))
         );
         assert_eq!(
             lookup_codex_thread_cwd_from_logs(&[], "ephemeral-thread"),

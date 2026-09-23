@@ -170,6 +170,15 @@ impl RequestContext {
         }
 
         if app_type_str == "codex" {
+            if let Some(route) = route_override.as_ref() {
+                if let Some(provider_id) = route.provider_id.as_deref() {
+                    crate::project_manager::record_recent_codex_model_route(
+                        &request_model,
+                        provider_id,
+                        route.force_model.as_deref(),
+                    );
+                }
+            }
             if let Some(project_path_key) = route_override
                 .as_ref()
                 .and_then(|route| route.project_path_key.as_deref())
@@ -210,6 +219,21 @@ impl RequestContext {
                         tag,
                         session_id,
                         activity.project_path_key
+                    );
+                    route_override = Some(route);
+                }
+            }
+
+            if route_override.is_none() {
+                if let Ok(Some(route)) = crate::project_manager::resolve_recent_codex_model_route(
+                    &state.db,
+                    &request_model,
+                ) {
+                    log::info!(
+                        "[{}] Ephemeral Codex thread {} inherited recent model route for {}",
+                        tag,
+                        session_id,
+                        request_model
                     );
                     route_override = Some(route);
                 }

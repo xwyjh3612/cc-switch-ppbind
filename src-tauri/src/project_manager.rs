@@ -4,7 +4,7 @@
 //! session. The database stores only explicit provider overrides; all other
 //! requests continue to use the existing global provider selection.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, Instant};
@@ -317,6 +317,143 @@ pub fn get_recent_codex_activity(
         .iter()
         .all(|activity| activity.project_path_key == first.project_path_key)
         .then(|| (*first).clone())
+}
+
+#[derive(Debug, Clone)]
+struct RecentCodexModelRoute {
+    provider_id: String,
+    force_model: Option<String>,
+    recorded_at: Instant,
+}
+
+static RECENT_CODEX_MODEL_ROUTES: LazyLock<
+    RwLock<HashMap<String, VecDeque<RecentCodexModelRoute>>>,
+> = LazyLock::new(|| RwLock::new(HashMap::new()));
+
+const RECENT_CODEX_MODEL_ROUTE_TTL: Duration = Duration::from_secs(10 * 60);
+const RECENT_CODEX_MODEL_ROUTE_LIMIT: usize = 5;
+const RECENT_CODEX_MODEL_LIMIT: usize = 256;
+const RECENT_CODEX_MODEL_NAME_MAX_BYTES: usize = 200;
+
+fn normalize_recent_codex_model(model: &str) -> Option<String> {
+    let model = model.trim();
+    if model.is_empty()
+        || model.eq_ignore_ascii_case("unknown")
+        || model.len() > RECENT_CODEX_MODEL_NAME_MAX_BYTES
+        || model.contains(['\r', '\n'])
+    {
+        return None;
+    }
+    Some(model.to_lowercase())
+}
+
+fn same_recent_codex_model_route(
+    left: &RecentCodexModelRoute,
+    provider_id: &str,
+    force_model: Option<&str>,
+) -> bool {
+    left.provider_id == provider_id && left.force_model.as_deref() == force_model
+}
+
+fn prune_recent_codex_model_routes(
+    routes: &mut HashMap<String, VecDeque<RecentCodexModelRoute>>,
+    now: Instant,
+) {
+    for records in routes.values_mut() {
+        records.retain(|record| {
+            now.duration_since(record.recorded_at) <= RECENT_CODEX_MODEL_ROUTE_TTL
+        });
+    }
+    routes.retain(|_, records| !records.is_empty());
+}
+
+/// Remember the effective Codex route for a client model.
+///
+/// This is deliberately separate from the short-lived prompt cache: prompt
+/// matching must stay narrow, while anonymous helper threads may arrive much
+/// later and still need a recent model-to-route fallback.
+pub fn record_recent_codex_model_route(model: &str, provider_id: &str, force_model: Option<&str>) {
+    let Some(model) = normalize_recent_codex_model(model) else {
+        return;
+    };
+    let provider_id = provider_id.trim();
+    if provider_id.is_empty() {
+        return;
+    }
+    let force_model = force_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string);
+
+    let now = Instant::now();
+    let Ok(mut routes) = RECENT_CODEX_MODEL_ROUTES.write() else {
+        return;
+    };
+    prune_recent_codex_model_routes(&mut routes, now);
+
+    if !routes.contains_key(&model) && routes.len() >= RECENT_CODEX_MODEL_LIMIT {
+        if let Some(oldest_model) = routes
+            .iter()
+            .min_by_key(|(_, records)| records.back().map(|record| record.recorded_at))
+            .map(|(model, _)| model.clone())
+        {
+            routes.remove(&oldest_model);
+        }
+    }
+
+    let records = routes.entry(model).or_default();
+    records.retain(|record| {
+        !same_recent_codex_model_route(record, provider_id, force_model.as_deref())
+    });
+    records.push_front(RecentCodexModelRoute {
+        provider_id: provider_id.to_string(),
+        force_model,
+        recorded_at: now,
+    });
+    while records.len() > RECENT_CODEX_MODEL_ROUTE_LIMIT {
+        records.pop_back();
+    }
+}
+
+/// Resolve a Codex route from the recent model-to-route cache.
+///
+/// Entries are newest-first. The first still-valid route is used even when
+/// several projects recently used the same model: for anonymous helper threads,
+/// succeeding is more important than avoiding an occasional cross-project
+/// fallback.
+pub fn resolve_recent_codex_model_route(
+    db: &Database,
+    model: &str,
+) -> Result<Option<RouteOverride>, AppError> {
+    let Some(model) = normalize_recent_codex_model(model) else {
+        return Ok(None);
+    };
+
+    let now = Instant::now();
+    let records = {
+        let Ok(mut routes) = RECENT_CODEX_MODEL_ROUTES.write() else {
+            return Ok(None);
+        };
+        prune_recent_codex_model_routes(&mut routes, now);
+        routes.get(&model).cloned().unwrap_or_default()
+    };
+
+    for record in records {
+        if db
+            .get_provider_by_id(&record.provider_id, "codex")?
+            .is_none()
+        {
+            continue;
+        }
+
+        return Ok(Some(RouteOverride {
+            provider_id: Some(record.provider_id),
+            force_model: record.force_model,
+            project_path_key: None,
+        }));
+    }
+
+    Ok(None)
 }
 
 fn codex_prompt_matches(candidate: &str, prompt: &str) -> bool {
@@ -745,6 +882,23 @@ mod tests {
         }
     }
 
+    fn clear_recent_codex_model_routes() {
+        if let Ok(mut routes) = RECENT_CODEX_MODEL_ROUTES.write() {
+            routes.clear();
+        }
+    }
+
+    fn age_recent_codex_model_routes(age: Duration) {
+        if let Ok(mut routes) = RECENT_CODEX_MODEL_ROUTES.write() {
+            let recorded_at = Instant::now() - age;
+            for records in routes.values_mut() {
+                for record in records {
+                    record.recorded_at = recorded_at;
+                }
+            }
+        }
+    }
+
     fn session(
         provider_id: &str,
         session_id: &str,
@@ -829,6 +983,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn normalizes_extended_codex_cwd_for_project_lookup() {
         assert_eq!(
@@ -1094,18 +1249,102 @@ mod tests {
     }
 
     #[test]
+    fn recent_codex_model_route_prefers_latest_available() {
+        let _guard = RECENT_CODEX_TEST_LOCK.lock().unwrap();
+        clear_recent_codex_model_routes();
+        let db = Database::memory().expect("create memory db");
+        for provider_id in ["provider-a", "provider-b"] {
+            db.save_provider(
+                "codex",
+                &crate::provider::Provider::with_id(
+                    provider_id.to_string(),
+                    provider_id.to_string(),
+                    serde_json::json!({}),
+                    None,
+                ),
+            )
+            .unwrap();
+        }
+
+        record_recent_codex_model_route(" GPT-5.6-SOL ", "provider-a", Some("gpt-5.6"));
+        let route = resolve_recent_codex_model_route(&db, "gpt-5.6-sol")
+            .unwrap()
+            .expect("recent route should resolve");
+        assert_eq!(route.provider_id.as_deref(), Some("provider-a"));
+        assert_eq!(route.force_model.as_deref(), Some("gpt-5.6"));
+
+        record_recent_codex_model_route("gpt-5.6-sol", "provider-b", None);
+        let route = resolve_recent_codex_model_route(&db, "gpt-5.6-sol")
+            .unwrap()
+            .expect("latest recent route should win");
+        assert_eq!(route.provider_id.as_deref(), Some("provider-b"));
+        assert!(route.force_model.is_none());
+
+        age_recent_codex_model_routes(Duration::from_secs(60));
+        let route = resolve_recent_codex_model_route(&db, "gpt-5.6-sol")
+            .unwrap()
+            .expect("latest valid route should remain available after 30 seconds");
+        assert_eq!(route.provider_id.as_deref(), Some("provider-b"));
+        assert!(route.force_model.is_none());
+
+        clear_recent_codex_model_routes();
+        record_recent_codex_model_route("gpt-5.6-sol", "provider-a", None);
+        age_recent_codex_model_routes(Duration::from_secs(60));
+        assert_eq!(
+            resolve_recent_codex_model_route(&db, "gpt-5.6-sol")
+                .unwrap()
+                .and_then(|route| route.provider_id)
+                .as_deref(),
+            Some("provider-a")
+        );
+
+        age_recent_codex_model_routes(RECENT_CODEX_MODEL_ROUTE_TTL + Duration::from_secs(1));
+        assert!(resolve_recent_codex_model_route(&db, "gpt-5.6-sol")
+            .unwrap()
+            .is_none());
+        clear_recent_codex_model_routes();
+    }
+
+    #[test]
+    fn recent_codex_model_route_deduplicates_and_caps_per_model() {
+        let _guard = RECENT_CODEX_TEST_LOCK.lock().unwrap();
+        clear_recent_codex_model_routes();
+
+        record_recent_codex_model_route("gpt-5.6-sol", "provider-a", None);
+        record_recent_codex_model_route("gpt-5.6-sol", "provider-a", None);
+        {
+            let routes = RECENT_CODEX_MODEL_ROUTES.read().unwrap();
+            assert_eq!(routes.get("gpt-5.6-sol").unwrap().len(), 1);
+        }
+
+        for index in 2..=6 {
+            record_recent_codex_model_route("gpt-5.6-sol", &format!("provider-{index}"), None);
+        }
+
+        let routes = RECENT_CODEX_MODEL_ROUTES.read().unwrap();
+        let records = routes.get("gpt-5.6-sol").unwrap();
+        assert_eq!(records.len(), RECENT_CODEX_MODEL_ROUTE_LIMIT);
+        assert_eq!(records.front().unwrap().provider_id, "provider-6");
+        assert_eq!(records.back().unwrap().provider_id, "provider-2");
+        drop(routes);
+        clear_recent_codex_model_routes();
+    }
+
+    #[test]
     fn resets_only_routes_for_the_selected_client() {
         let db = Database::memory().expect("create memory db");
-        upsert_route(&db, "C:/workspace/demo", "codex", "codex-provider").unwrap();
-        upsert_route(&db, "C:/workspace/demo", "claude", "claude-provider").unwrap();
+        let project_path = "C:/workspace/demo";
+        let path_key = normalize_project_path(project_path).unwrap();
+        upsert_route(&db, project_path, "codex", "codex-provider").unwrap();
+        upsert_route(&db, project_path, "claude", "claude-provider").unwrap();
 
         assert_eq!(delete_routes_by_app_type(&db, "codex").unwrap(), 1);
         assert!(db
-            .get_project_provider_route("c:/workspace/demo", "codex")
+            .get_project_provider_route(&path_key, "codex")
             .unwrap()
             .is_none());
         assert!(db
-            .get_project_provider_route("c:/workspace/demo", "claude")
+            .get_project_provider_route(&path_key, "claude")
             .unwrap()
             .is_some());
     }
