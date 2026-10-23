@@ -1,4 +1,5 @@
-import { ChevronRight, Clock } from "lucide-react";
+import { ChevronRight, Clock, Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useTranslation } from "react-i18next";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -27,6 +28,8 @@ interface SessionItemProps {
   searchQuery?: string;
   onSelect: (key: string) => void;
   onToggleChecked: (checked: boolean) => void;
+  onDelete: () => void;
+  isDeleting: boolean;
 }
 
 export function SessionItem({
@@ -38,6 +41,8 @@ export function SessionItem({
   searchQuery,
   onSelect,
   onToggleChecked,
+  onDelete,
+  isDeleting,
 }: SessionItemProps) {
   const { t } = useTranslation();
   const title = formatSessionTitle(session);
@@ -105,6 +110,23 @@ export function SessionItem({
           </span>
         </div>
       </button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="size-7 shrink-0 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+        disabled={isCheckDisabled || isDeleting}
+        title={t("sessionManager.deleteTooltip", {
+          defaultValue: "永久删除此本地会话记录",
+        })}
+        aria-label={t("sessionManager.deleteNamed", {
+          defaultValue: "删除会话：{{title}}",
+          title,
+        })}
+        onClick={onDelete}
+      >
+        <Trash2 className="size-3.5" />
+      </Button>
     </div>
   );
 }

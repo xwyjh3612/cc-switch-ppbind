@@ -1124,6 +1124,7 @@
     "copySourcePath": "复制原始文件",
     "sourcePathCopied": "原始文件已复制",
     "delete": "删除会话",
+    "deleteNamed": "删除会话：{{title}}",
     "deleting": "删除中...",
     "deleteTooltip": "永久删除此本地会话记录",
     "deleteConfirmTitle": "删除会话",

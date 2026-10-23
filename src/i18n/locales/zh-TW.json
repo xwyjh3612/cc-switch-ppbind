@@ -1125,6 +1125,7 @@
     "copySourcePath": "複製原始檔案",
     "sourcePathCopied": "原始檔案已複製",
     "delete": "刪除工作階段",
+    "deleteNamed": "刪除工作階段：{{title}}",
     "deleting": "刪除中...",
     "deleteTooltip": "永久刪除此本地工作階段紀錄",
     "deleteConfirmTitle": "刪除工作階段",

@@ -29,7 +29,7 @@ import {
   useSessionMessagesQuery,
   useSessionsQuery,
 } from "@/lib/query";
-import { piApi, sessionsApi } from "@/lib/api";
+import { piApi, projectsApi, sessionsApi } from "@/lib/api";
 import type { SessionMeta } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -459,24 +459,27 @@ export function SessionManagerPage({ appId }: { appId: string }) {
     }
 
     const targets = deleteTargets.filter((session) => session.sourcePath);
-    setDeleteTargets(null);
-
     if (targets.length === 0) {
       return;
     }
 
     if (targets.length === 1) {
       const [target] = targets;
-      await deleteSessionMutation.mutateAsync({
-        providerId: target.providerId,
-        sessionId: target.sessionId,
-        sourcePath: target.sourcePath!,
-      });
-      setSelectedSessionKeys((current) => {
-        const next = new Set(current);
-        next.delete(getSessionKey(target));
-        return next;
-      });
+      try {
+        await deleteSessionMutation.mutateAsync({
+          providerId: target.providerId,
+          sessionId: target.sessionId,
+          sourcePath: target.sourcePath!,
+        });
+        setSelectedSessionKeys((current) => {
+          const next = new Set(current);
+          next.delete(getSessionKey(target));
+          return next;
+        });
+        setDeleteTargets(null);
+      } catch {
+        // The mutation reports the error and leaves the dialog available for retry.
+      }
       return;
     }
 
@@ -524,7 +527,21 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         return next;
       });
 
-      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      await Promise.allSettled(
+        results
+          .filter(
+            (result) =>
+              result.success && ["codex", "claude"].includes(result.providerId),
+          )
+          .map((result) =>
+            projectsApi.clearSessionRoute(result.providerId, result.sessionId),
+          ),
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["sessions"] }),
+        queryClient.invalidateQueries({ queryKey: ["projects"] }),
+      ]);
+      setDeleteTargets(null);
 
       if (deletedKeys.length > 0) {
         toast.success(
@@ -718,6 +735,8 @@ export function SessionManagerPage({ appId }: { appId: string }) {
         isCheckDisabled={!session.sourcePath || session.providerId === "mcode"}
         onSelect={setSelectedKey}
         onToggleChecked={(checked) => toggleSessionChecked(session, checked)}
+        onDelete={() => setDeleteTargets([session])}
+        isDeleting={isDeleting}
       />
     );
   };
@@ -1769,6 +1788,7 @@ export function SessionManagerPage({ appId }: { appId: string }) {
       </div>
       <ConfirmDialog
         isOpen={Boolean(deleteTargets)}
+        pending={isDeleting}
         title={
           deleteTargets && deleteTargets.length > 1
             ? t("sessionManager.batchDeleteConfirmTitle", {

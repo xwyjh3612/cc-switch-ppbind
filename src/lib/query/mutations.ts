@@ -1,7 +1,14 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { providersApi, sessionsApi, settingsApi, type AppId } from "@/lib/api";
+import {
+  projectsApi,
+  providersApi,
+  sessionsApi,
+  settingsApi,
+  type AppId,
+} from "@/lib/api";
+import type { ProjectDto } from "@/lib/api/projects";
 import type { DeleteSessionOptions } from "@/lib/api/sessions";
 import type { SwitchResult } from "@/lib/api/providers";
 import type { Provider, SessionMeta, Settings } from "@/types";
@@ -390,7 +397,9 @@ export const useDeleteSessionMutation = () => {
 
   return useMutation({
     mutationFn: async (input: DeleteSessionOptions) => {
-      await sessionsApi.delete(input);
+      if (!(await sessionsApi.delete(input))) {
+        throw new Error("Failed to delete session");
+      }
       return input;
     },
     onSuccess: async (input) => {
@@ -407,8 +416,43 @@ export const useDeleteSessionMutation = () => {
       queryClient.removeQueries({
         queryKey: ["sessionMessages", input.providerId, input.sourcePath],
       });
-
-      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      queryClient.setQueryData<ProjectDto[]>(["projects"], (current) =>
+        current?.map((project) => ({
+          ...project,
+          sessions: project.sessions.filter(
+            (session) =>
+              !(
+                session.providerId === input.providerId &&
+                session.sessionId === input.sessionId &&
+                session.sourcePath === input.sourcePath
+              ),
+          ),
+          sessionRoutes: project.sessionRoutes.filter(
+            (route) =>
+              !(
+                route.appType === input.providerId &&
+                route.sessionId === input.sessionId
+              ),
+          ),
+        })),
+      );
+      if (input.providerId === "codex" || input.providerId === "claude") {
+        try {
+          await projectsApi.clearSessionRoute(
+            input.providerId,
+            input.sessionId,
+          );
+        } catch (error) {
+          console.warn(
+            "Session deleted, but its project route could not be cleared",
+            error,
+          );
+        }
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["sessions"] }),
+        queryClient.invalidateQueries({ queryKey: ["projects"] }),
+      ]);
 
       toast.success(
         t("sessionManager.sessionDeleted", {

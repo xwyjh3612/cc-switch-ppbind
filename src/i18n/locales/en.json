@@ -1124,6 +1124,7 @@
     "copySourcePath": "Copy source file",
     "sourcePathCopied": "Source file copied",
     "delete": "Delete session",
+    "deleteNamed": "Delete session: {{title}}",
     "deleting": "Deleting...",
     "deleteTooltip": "Permanently delete this local session record",
     "deleteConfirmTitle": "Delete session",

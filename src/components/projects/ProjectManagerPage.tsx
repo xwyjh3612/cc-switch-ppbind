@@ -17,6 +17,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { projectsApi, providersApi, sessionsApi } from "@/lib/api";
+import { useDeleteSessionMutation } from "@/lib/query";
 import type { CodexEncryptedContentRepairPreview } from "@/lib/api/sessions";
 import type {
   ProjectDto,
@@ -556,6 +557,11 @@ export function ProjectManagerPage() {
   const [repairingSessionKeys, setRepairingSessionKeys] = useState<Set<string>>(
     () => new Set(),
   );
+  const [deleteTargetSession, setDeleteTargetSession] = useState<
+    ProjectDto["sessions"][number] | null
+  >(null);
+  const deleteSessionMutation = useDeleteSessionMutation();
+  const deletingSession = deleteSessionMutation.isPending;
   const [repairTargetSession, setRepairTargetSession] = useState<
     ProjectDto["sessions"][number] | null
   >(null);
@@ -744,7 +750,11 @@ export function ProjectManagerPage() {
         sourcePath: session.sourcePath,
       });
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
-      if (result.removedItems > 0 || result.clearedResponseIds > 0 || result.clearedItemIds > 0) {
+      if (
+        result.removedItems > 0 ||
+        result.clearedResponseIds > 0 ||
+        result.clearedItemIds > 0
+      ) {
         toast.success(
           t("projectManager.encryptedContentRemoved", {
             defaultValue:
@@ -821,6 +831,20 @@ export function ProjectManagerPage() {
       );
     } finally {
       setLoadingRepairPreview(false);
+    }
+  };
+
+  const confirmDeleteSession = async () => {
+    if (!deleteTargetSession?.sourcePath || deletingSession) return;
+    try {
+      await deleteSessionMutation.mutateAsync({
+        providerId: deleteTargetSession.providerId,
+        sessionId: deleteTargetSession.sessionId,
+        sourcePath: deleteTargetSession.sourcePath,
+      });
+      setDeleteTargetSession(null);
+    } catch {
+      // The mutation displays the error; retain the target for retry.
     }
   };
 
@@ -1351,6 +1375,7 @@ export function ProjectManagerPage() {
                                   size="icon"
                                   className="size-7 p-0"
                                   disabled={
+                                    deletingSession ||
                                     !session.sourcePath ||
                                     repairingSessionKeys.has(
                                       getSessionKey(session),
@@ -1445,6 +1470,29 @@ export function ProjectManagerPage() {
                                   deleteForceModel(activeProjectApp, model)
                                 }
                               />
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="size-7 shrink-0 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                disabled={
+                                  !session.sourcePath ||
+                                  deletingSession ||
+                                  repairingSessionKeys.has(
+                                    getSessionKey(session),
+                                  )
+                                }
+                                title={t("sessionManager.delete", {
+                                  defaultValue: "删除会话",
+                                })}
+                                aria-label={t("sessionManager.deleteNamed", {
+                                  defaultValue: "删除会话：{{title}}",
+                                  title: formatSessionTitle(session),
+                                })}
+                                onClick={() => setDeleteTargetSession(session)}
+                              >
+                                <Trash2 className="size-3.5" />
+                              </Button>
                             </div>
                           </div>
                         );
@@ -1513,6 +1561,29 @@ export function ProjectManagerPage() {
             setRepairPreview(null);
             setRepairPreviewError(null);
           }
+        }}
+      />
+
+      <ConfirmDialog
+        isOpen={deleteTargetSession !== null}
+        title={t("sessionManager.deleteConfirmTitle", {
+          defaultValue: "删除会话",
+        })}
+        message={t("sessionManager.deleteConfirmMessage", {
+          title: deleteTargetSession
+            ? formatSessionTitle(deleteTargetSession)
+            : "",
+          sessionId: deleteTargetSession?.sessionId ?? "",
+          defaultValue:
+            "将永久删除本地会话“{{title}}”\nSession ID: {{sessionId}}\n\n此操作不可恢复。",
+        })}
+        confirmText={t("sessionManager.deleteConfirmAction", {
+          defaultValue: "删除会话",
+        })}
+        pending={deletingSession}
+        onConfirm={() => void confirmDeleteSession()}
+        onCancel={() => {
+          if (!deletingSession) setDeleteTargetSession(null);
         }}
       />
 

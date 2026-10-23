@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
 import { piApi } from "@/lib/api/pi";
 import { sessionsApi } from "@/lib/api/sessions";
+import { projectsApi } from "@/lib/api/projects";
 import type { SessionMessage, SessionMeta } from "@/types";
 import { setSessionFixtures } from "../msw/state";
 
@@ -41,6 +42,7 @@ vi.mock("@/components/ConfirmDialog", () => ({
     cancelText,
     onConfirm,
     onCancel,
+    pending,
   }: {
     isOpen: boolean;
     title: string;
@@ -49,13 +51,18 @@ vi.mock("@/components/ConfirmDialog", () => ({
     cancelText: string;
     onConfirm: () => void;
     onCancel: () => void;
+    pending?: boolean;
   }) =>
     isOpen ? (
       <div data-testid="confirm-dialog">
         <div>{title}</div>
         <div>{message}</div>
-        <button onClick={onConfirm}>{confirmText}</button>
-        <button onClick={onCancel}>{cancelText}</button>
+        <button onClick={onConfirm} disabled={pending}>
+          {confirmText}
+        </button>
+        <button onClick={onCancel} disabled={pending}>
+          {cancelText}
+        </button>
       </div>
     ) : null,
 }));
@@ -154,6 +161,7 @@ describe("SessionManagerPage", () => {
   beforeEach(() => {
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
+    vi.spyOn(projectsApi, "clearSessionRoute").mockResolvedValue(true);
     Element.prototype.scrollIntoView = vi.fn();
     window.localStorage.removeItem("cc-switch.sessionManager.listViewMode");
     window.localStorage.removeItem(GROUP_EXPANSION_STORAGE_KEY);
@@ -245,7 +253,7 @@ describe("SessionManagerPage", () => {
       ).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^删除会话$/i }));
 
     const dialog = screen.getByTestId("confirm-dialog");
     expect(dialog).toBeInTheDocument();
@@ -262,6 +270,83 @@ describe("SessionManagerPage", () => {
     expect(screen.queryByText("Alpha Session")).not.toBeInTheDocument();
     expect(toastErrorMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).toHaveBeenCalled();
+  });
+
+  it("deletes a session from its list row without changing the selected session", async () => {
+    const { client } = renderPage();
+    await screen.findByRole("heading", { name: "Alpha Session" });
+    client.setQueryData(
+      ["projects"],
+      [
+        {
+          pathKey: "/mock/codex",
+          projectPath: "/mock/codex",
+          sessions: client.getQueryData<SessionMeta[]>(["sessions"]),
+          routes: [],
+          sessionRoutes: [{ appType: "codex", sessionId: "codex-session-2" }],
+        },
+      ],
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "删除会话：Beta Session" }),
+    );
+    const dialog = screen.getByTestId("confirm-dialog");
+    expect(within(dialog).getByText(/Beta Session/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: /删除会话/i }));
+    await waitFor(() =>
+      expect(screen.queryByText("Beta Session")).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("heading", { name: "Alpha Session" }),
+    ).toBeInTheDocument();
+    expect(projectsApi.clearSessionRoute).toHaveBeenCalledWith(
+      "codex",
+      "codex-session-2",
+    );
+    const cached = client.getQueryData<
+      { sessions: SessionMeta[]; sessionRoutes: unknown[] }[]
+    >(["projects"]);
+    expect(
+      cached?.[0].sessions.some(
+        (session) => session.sessionId === "codex-session-2",
+      ),
+    ).toBe(false);
+    expect(cached?.[0].sessionRoutes).toEqual([]);
+  });
+
+  it("keeps a failed single deletion available for retry", async () => {
+    const deleteSpy = vi
+      .spyOn(sessionsApi, "delete")
+      .mockRejectedValueOnce(new Error("file in use"));
+    renderPage();
+    await screen.findByRole("heading", { name: "Alpha Session" });
+    fireEvent.click(
+      screen.getByRole("button", { name: "删除会话：Beta Session" }),
+    );
+    fireEvent.click(
+      within(screen.getByTestId("confirm-dialog")).getByRole("button", {
+        name: /删除会话/i,
+      }),
+    );
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("confirm-dialog")).getByRole("button", {
+          name: /删除会话/i,
+        }),
+      ).not.toBeDisabled(),
+    );
+    expect(screen.getByTestId("confirm-dialog")).toBeInTheDocument();
+    expect(screen.getByText("Beta Session")).toBeInTheDocument();
+    fireEvent.click(
+      within(screen.getByTestId("confirm-dialog")).getByRole("button", {
+        name: /删除会话/i,
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Beta Session")).not.toBeInTheDocument(),
+    );
+    deleteSpy.mockRestore();
   });
 
   it("removes a deleted session from filtered search results", async () => {
@@ -285,7 +370,7 @@ describe("SessionManagerPage", () => {
       ).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /删除会话/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^删除会话$/i }));
 
     const dialog = screen.getByTestId("confirm-dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: /删除会话/i }));
@@ -455,7 +540,7 @@ describe("SessionManagerPage", () => {
       screen.queryByRole("button", { name: /展开或折叠 codex 目录分组/ }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /Alpha Session/ }),
+      screen.queryByRole("button", { name: /^OpenAI Alpha Session/ }),
     ).not.toBeInTheDocument();
   });
 
@@ -475,7 +560,7 @@ describe("SessionManagerPage", () => {
       screen.getByRole("button", { name: /展开或折叠 codex 目录分组/ }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Alpha Session/ }),
+      screen.getByRole("button", { name: /^OpenAI Alpha Session/ }),
     ).toBeInTheDocument();
     await waitFor(() =>
       expect(
@@ -510,7 +595,9 @@ describe("SessionManagerPage", () => {
       expect(screen.getByText("Alpha Session")).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Alpha Session/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /^OpenAI Alpha Session/ }),
+    );
     await switchToGroupedView();
     await switchProviderFilter(/Claude Code/i);
 
@@ -536,7 +623,7 @@ describe("SessionManagerPage", () => {
       screen.getByRole("button", { name: /展开或折叠 claude 目录分组/ }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Claude Session/ }),
+      screen.getByRole("button", { name: /^Claude Claude Session/ }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Gamma Session")).not.toBeInTheDocument();
   });
