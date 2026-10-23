@@ -2,7 +2,11 @@ pub mod providers;
 pub mod terminal;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use providers::{claude, codex, gemini, grokbuild, hermes, mcode, openclaw, opencode, pi};
 
@@ -55,6 +59,191 @@ pub struct DeleteSessionOutcome {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexEncryptedContentRepairResult {
+    pub session_id: String,
+    pub source_path: String,
+    pub removed_items: usize,
+    pub backup_path: Option<String>,
+}
+
+/// Remove opaque reasoning items that cannot be replayed by a different Codex
+/// backend. The original rollout is copied to a repair backup before writing.
+pub fn repair_codex_encrypted_content(
+    provider_id: &str,
+    session_id: &str,
+    source_path: &str,
+) -> Result<CodexEncryptedContentRepairResult, String> {
+    let codex_dir = crate::codex_config::get_codex_config_dir();
+    let roots = codex::session_roots();
+    repair_codex_encrypted_content_with_roots(
+        provider_id,
+        session_id,
+        source_path,
+        &roots,
+        &codex_dir.join("session-repairs"),
+    )
+}
+
+fn repair_codex_encrypted_content_with_roots(
+    provider_id: &str,
+    session_id: &str,
+    source_path: &str,
+    roots: &[PathBuf],
+    repair_root: &Path,
+) -> Result<CodexEncryptedContentRepairResult, String> {
+    if provider_id != "codex" {
+        return Err("Encrypted-content repair is only supported for Codex sessions".to_string());
+    }
+    if session_id.trim().is_empty() {
+        return Err("Session ID cannot be empty".to_string());
+    }
+    if !session_id
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        return Err("Codex session ID contains invalid characters".to_string());
+    }
+
+    let source = Path::new(source_path);
+    if source.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
+        return Err("Codex session source must be a JSONL file".to_string());
+    }
+    let validated_source = canonicalize_existing_path(source, "session source")?;
+    let inside_root = roots.iter().filter(|root| root.exists()).any(|root| {
+        root.canonicalize()
+            .map(|resolved| validated_source.starts_with(resolved))
+            .unwrap_or(false)
+    });
+    if !inside_root {
+        return Err(format!(
+            "Session source path is outside Codex session roots: {}",
+            source.display()
+        ));
+    }
+
+    let original = fs::read(&validated_source)
+        .map_err(|e| format!("Failed to read Codex session {}: {e}", validated_source.display()))?;
+    let text = String::from_utf8(original.clone())
+        .map_err(|e| format!("Codex session is not valid UTF-8: {e}"))?;
+    let mut retained = Vec::new();
+    let mut removed_items = 0usize;
+    let mut found_session_id = false;
+
+    for (line_no, line) in text.split_inclusive('\n').enumerate() {
+        let json_text = line.trim_end_matches(['\r', '\n']);
+        let value: Value = serde_json::from_str(json_text).map_err(|e| {
+            format!("Invalid JSON in Codex session at line {}: {e}", line_no + 1)
+        })?;
+        if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+            let file_session_id = value
+                .get("payload")
+                .and_then(|payload| payload.get("id"))
+                .and_then(Value::as_str);
+            if file_session_id != Some(session_id) {
+                return Err(format!(
+                    "Codex session ID does not match the requested ID: {}",
+                    validated_source.display()
+                ));
+            }
+            found_session_id = true;
+        }
+        let is_encrypted_reasoning = value.get("type").and_then(Value::as_str)
+            == Some("response_item")
+            && value
+                .get("payload")
+                .and_then(Value::as_object)
+                .map(|payload| {
+                    payload.get("type").and_then(Value::as_str) == Some("reasoning")
+                        && payload
+                            .get("encrypted_content")
+                            .and_then(Value::as_str)
+                            .map(|content| !content.is_empty())
+                            .unwrap_or(false)
+                })
+                .unwrap_or(false);
+        if is_encrypted_reasoning {
+            removed_items += 1;
+            continue;
+        }
+        retained.push(line);
+    }
+    // split_inclusive omits a final empty segment, so preserve an empty file and
+    // retain the exact bytes of every non-removed line.
+    if text.is_empty() {
+        return Err("Codex session is empty".to_string());
+    }
+    if !found_session_id {
+        return Err("Codex session metadata is missing".to_string());
+    }
+
+    let backup_path = if removed_items > 0 {
+        let session_repair_root = repair_root.join(session_id);
+        fs::create_dir_all(&session_repair_root).map_err(|e| {
+            format!(
+                "Failed to create repair backup directory {}: {e}",
+                session_repair_root.display()
+            )
+        })?;
+        let mut backup_file = None;
+        let mut last_error = None;
+        for _ in 0..16 {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let backup = session_repair_root.join(format!("{stamp}-original.jsonl"));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&backup)
+            {
+                Ok(mut file) => {
+                    if let Err(error) = file.write_all(&original).and_then(|_| file.sync_all()) {
+                        let _ = fs::remove_file(&backup);
+                        return Err(format!("Failed to back up Codex session: {error}"));
+                    }
+                    backup_file = Some((backup, file));
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_error = Some(error);
+                }
+                Err(error) => return Err(format!("Failed to back up Codex session: {error}")),
+            }
+        }
+        let Some((backup, backup_file)) = backup_file else {
+            return Err(format!(
+                "Failed to create a unique Codex session backup: {}",
+                last_error
+                    .map(|error| error.to_string())
+                    .unwrap_or_else(|| "too many name collisions".to_string())
+            ));
+        };
+        drop(backup_file);
+        if fs::read(&validated_source)
+            .map_err(|e| format!("Failed to recheck Codex session before writing: {e}"))?
+            != original
+        {
+            return Err("Codex session changed during repair; the backup was kept and the file was not modified".to_string());
+        }
+        let repaired = retained.concat().into_bytes();
+        crate::config::atomic_write(&validated_source, &repaired)
+            .map_err(|e| format!("Failed to write repaired Codex session: {e}"))?;
+        Some(backup.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+
+    Ok(CodexEncryptedContentRepairResult {
+        session_id: session_id.to_string(),
+        source_path: validated_source.to_string_lossy().into_owned(),
+        removed_items,
+        backup_path,
+    })
 }
 
 pub fn scan_sessions() -> Vec<SessionMeta> {
@@ -285,6 +474,56 @@ mod tests {
             ),
         )
         .expect("write source");
+    }
+
+    #[test]
+    fn repair_codex_encrypted_content_backs_up_and_removes_encrypted_reasoning() {
+        let temp = tempdir().expect("tempdir");
+        let sessions = temp.path().join("sessions");
+        let repair_root = temp.path().join("repairs");
+        std::fs::create_dir_all(&sessions).expect("sessions");
+        let path = sessions.join("session.jsonl");
+        let original = concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-1\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":\"hello\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"reasoning\",\"encrypted_content\":\"opaque\"}}\n",
+        );
+        std::fs::write(&path, original).expect("write");
+
+        let result = repair_codex_encrypted_content_with_roots(
+            "codex",
+            "session-1",
+            path.to_str().unwrap(),
+            &[sessions],
+            &repair_root,
+        )
+        .expect("repair");
+        assert_eq!(result.removed_items, 1);
+        let backup_path = result.backup_path.expect("backup");
+        assert_eq!(std::fs::read(backup_path).expect("read backup"), original.as_bytes());
+        let repaired = std::fs::read_to_string(&path).expect("read repaired");
+        assert!(repaired.contains("\"role\":\"user\""));
+        assert!(!repaired.contains("encrypted_content"));
+    }
+
+    #[test]
+    fn repair_codex_encrypted_content_rejects_mismatched_session_id() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"other\"}}\n",
+        )
+        .expect("write");
+        let error = repair_codex_encrypted_content_with_roots(
+            "codex",
+            "session-1",
+            path.to_str().unwrap(),
+            &[temp.path().to_path_buf()],
+            &temp.path().join("repairs"),
+        )
+        .expect_err("mismatch should fail");
+        assert!(error.contains("does not match"));
     }
 
     #[test]

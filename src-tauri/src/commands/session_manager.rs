@@ -117,3 +117,16 @@ pub async fn delete_sessions(
         .await
         .map_err(|e| format!("Failed to delete sessions: {e}"))
 }
+
+#[tauri::command]
+pub async fn repair_codex_session_encrypted_content(
+    providerId: String,
+    sessionId: String,
+    sourcePath: String,
+) -> Result<session_manager::CodexEncryptedContentRepairResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        session_manager::repair_codex_encrypted_content(&providerId, &sessionId, &sourcePath)
+    })
+    .await
+    .map_err(|e| format!("Failed to repair Codex session: {e}"))?
+}

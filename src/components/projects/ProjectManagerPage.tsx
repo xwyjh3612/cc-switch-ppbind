@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  ShieldAlert,
   FolderOpen,
   MessageSquare,
   Plus,
@@ -15,7 +16,7 @@ import {
   Search,
   Trash2,
 } from "lucide-react";
-import { projectsApi, providersApi } from "@/lib/api";
+import { projectsApi, providersApi, sessionsApi } from "@/lib/api";
 import type {
   ProjectDto,
   ProjectProviderRoute,
@@ -551,6 +552,13 @@ export function ProjectManagerPage() {
   const [pendingRouteChange, setPendingRouteChange] =
     useState<PendingProjectRouteChange | null>(null);
   const [applyingRouteChange, setApplyingRouteChange] = useState(false);
+  const [repairingSessionKeys, setRepairingSessionKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [repairTargetSession, setRepairTargetSession] = useState<
+    ProjectDto["sessions"][number] | null
+  >(null);
+  const [confirmingSessionRepair, setConfirmingSessionRepair] = useState(false);
 
   const projects = useQuery({
     queryKey: ["projects"],
@@ -713,6 +721,61 @@ export function ProjectManagerPage() {
             defaultValue: "会话路由更新失败",
           }),
       );
+    }
+  };
+
+  const runSessionEncryptedContentRepair = async (
+    session: ProjectDto["sessions"][number],
+  ) => {
+    if (!session.sourcePath || session.providerId !== "codex") return;
+    const sessionKey = getSessionKey(session);
+    setRepairingSessionKeys((current) => new Set(current).add(sessionKey));
+    try {
+      const result = await sessionsApi.repairCodexEncryptedContent({
+        providerId: session.providerId,
+        sessionId: session.sessionId,
+        sourcePath: session.sourcePath,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      if (result.removedItems > 0) {
+        toast.success(
+          t("projectManager.encryptedContentRemoved", {
+            defaultValue: "已移除 {{count}} 个加密推理条目，原会话已备份",
+            count: result.removedItems,
+          }),
+          result.backupPath ? { description: result.backupPath } : undefined,
+        );
+      } else {
+        toast.info(
+          t("projectManager.encryptedContentNotFound", {
+            defaultValue: "此会话中未找到需要移除的加密推理内容",
+          }),
+        );
+      }
+    } catch (error) {
+      toast.error(
+        extractErrorMessage(error) ||
+          t("projectManager.encryptedContentRepairFailed", {
+            defaultValue: "移除加密推理内容失败",
+          }),
+      );
+    } finally {
+      setRepairingSessionKeys((current) => {
+        const next = new Set(current);
+        next.delete(sessionKey);
+        return next;
+      });
+    }
+  };
+
+  const confirmSessionEncryptedContentRepair = async () => {
+    if (!repairTargetSession || confirmingSessionRepair) return;
+    setConfirmingSessionRepair(true);
+    try {
+      await runSessionEncryptedContentRepair(repairTargetSession);
+      setRepairTargetSession(null);
+    } finally {
+      setConfirmingSessionRepair(false);
     }
   };
 
@@ -1236,6 +1299,44 @@ export function ProjectManagerPage() {
                             </div>
 
                             <div className="flex shrink-0 flex-wrap items-center gap-2 pl-5 sm:pl-0">
+                              {session.providerId === "codex" && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={
+                                    !session.sourcePath ||
+                                    repairingSessionKeys.has(
+                                      getSessionKey(session),
+                                    )
+                                  }
+                                  title={t(
+                                    "projectManager.removeEncryptedContent",
+                                    {
+                                      defaultValue:
+                                        "移除加密推理内容并备份原会话",
+                                    },
+                                  )}
+                                  aria-label={t(
+                                    "projectManager.removeEncryptedContent",
+                                    {
+                                      defaultValue:
+                                        "移除加密推理内容并备份原会话",
+                                    },
+                                  )}
+                                  onClick={() =>
+                                    setRepairTargetSession(session)
+                                  }
+                                >
+                                  {repairingSessionKeys.has(
+                                    getSessionKey(session),
+                                  ) ? (
+                                    <RefreshCw className="size-3.5 animate-spin" />
+                                  ) : (
+                                    <ShieldAlert className="size-3.5" />
+                                  )}
+                                </Button>
+                              )}
                               <ProviderDropdown
                                 value={sessionProviderId}
                                 missingProviderId={
@@ -1331,6 +1432,25 @@ export function ProjectManagerPage() {
           );
         })}
       </div>
+
+      <ConfirmDialog
+        isOpen={repairTargetSession !== null}
+        title={t("sessionManager.encryptedContentRepairTitle", {
+          defaultValue: "移除加密推理内容？",
+        })}
+        message={t("sessionManager.encryptedContentRepairConfirm", {
+          defaultValue:
+            "将移除该 Codex 会话中无法跨供应商解密的推理密文，以便尝试继续原会话。对话文本和工具记录会保留；被移除的推理无法恢复。操作前会自动备份完整原文件。",
+        })}
+        confirmText={t("sessionManager.encryptedContentRepairAction", {
+          defaultValue: "备份并移除",
+        })}
+        pending={confirmingSessionRepair}
+        onConfirm={() => void confirmSessionEncryptedContentRepair()}
+        onCancel={() => {
+          if (!confirmingSessionRepair) setRepairTargetSession(null);
+        }}
+      />
 
       <ConfirmDialog
         isOpen={pendingRouteChange !== null}

@@ -12,6 +12,13 @@ export interface DeleteSessionResult extends DeleteSessionOptions {
   error?: string;
 }
 
+export interface CodexEncryptedContentRepairResult {
+  sessionId: string;
+  sourcePath: string;
+  removedItems: number;
+  backupPath?: string | null;
+}
+
 export const sessionsApi = {
   async list(): Promise<SessionMeta[]> {
     return await invoke("list_sessions");
@@ -37,6 +44,16 @@ export const sessionsApi = {
     items: DeleteSessionOptions[],
   ): Promise<DeleteSessionResult[]> {
     return await invoke("delete_sessions", { items });
+  },
+
+  async repairCodexEncryptedContent(
+    options: DeleteSessionOptions,
+  ): Promise<CodexEncryptedContentRepairResult> {
+    return await invoke("repair_codex_session_encrypted_content", {
+      providerId: options.providerId,
+      sessionId: options.sessionId,
+      sourcePath: options.sourcePath,
+    });
   },
 
   async launchTerminal(options: {
