@@ -17,6 +17,7 @@ export interface CodexEncryptedContentRepairResult {
   sourcePath: string;
   removedItems: number;
   backupPath?: string | null;
+  historyBackupPaths?: string[];
 }
 
 export const sessionsApi = {

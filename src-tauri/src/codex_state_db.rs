@@ -23,6 +23,7 @@ pub(crate) const CODEX_STATE_DB_FILENAME: &str = "state_5.sqlite";
 
 /// Prefix used by Codex's versioned log database (`logs_2.sqlite`, ...).
 const CODEX_LOG_DB_PREFIX: &str = "logs_";
+pub(crate) const CODEX_THREAD_HISTORY_DB_PREFIX: &str = "thread_history_";
 
 /// Env var that overrides the Codex SQLite state directory.
 const CODEX_SQLITE_HOME_ENV: &str = "CODEX_SQLITE_HOME";
@@ -71,6 +72,49 @@ pub(crate) fn codex_log_db_paths(config_dir: &Path, config_text: &str) -> Vec<Pa
                 continue;
             };
             let Some(version) = codex_log_db_version(name) else {
+                continue;
+            };
+            candidates.push((version, path));
+        }
+    }
+
+    candidates.sort_by_key(|(version, _)| Reverse(*version));
+    let mut paths = Vec::new();
+    for (_, path) in candidates {
+        push_unique_path(&mut paths, path);
+    }
+    paths
+}
+
+/// Resolve Codex's history projection databases alongside the state DB.
+/// Codex keeps these as versioned `thread_history_*.sqlite` files and moves
+/// them together when `sqlite_home` is configured.
+pub(crate) fn codex_thread_history_db_paths(config_dir: &Path, config_text: &str) -> Vec<PathBuf> {
+    let mut dirs = vec![config_dir.to_path_buf()];
+    if let Some(sqlite_home) = sqlite_home_from_codex_config(config_text) {
+        push_unique_path(&mut dirs, sqlite_home);
+    } else if let Some(sqlite_home) = sqlite_home_from_env() {
+        push_unique_path(&mut dirs, sqlite_home);
+    }
+
+    let mut candidates = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            let Some(version) = name
+                .strip_prefix(CODEX_THREAD_HISTORY_DB_PREFIX)
+                .and_then(|value| value.strip_suffix(".sqlite"))
+                .and_then(|value| value.parse::<u32>().ok())
+            else {
                 continue;
             };
             candidates.push((version, path));

@@ -34,3 +34,4 @@ mainWindow.js
 /target/
 /target-fast/
 /target-debug-fast/
+/target-local/

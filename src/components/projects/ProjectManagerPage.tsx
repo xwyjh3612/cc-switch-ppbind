@@ -740,15 +740,24 @@ export function ProjectManagerPage() {
       if (result.removedItems > 0) {
         toast.success(
           t("projectManager.encryptedContentRemoved", {
-            defaultValue: "已移除 {{count}} 个加密推理条目，原会话已备份",
+            defaultValue:
+              "已清理 {{count}} 个推理历史条目，原会话和历史缓存已备份",
             count: result.removedItems,
           }),
-          result.backupPath ? { description: result.backupPath } : undefined,
+          result.backupPath
+            ? {
+                description: [
+                  result.backupPath,
+                  ...(result.historyBackupPaths ?? []),
+                ].join("\n"),
+              }
+            : undefined,
         );
       } else {
         toast.info(
           t("projectManager.encryptedContentNotFound", {
-            defaultValue: "此会话中未找到需要移除的加密推理内容",
+            defaultValue:
+              "未找到推理条目，但已清理该会话的历史缓存，请重新尝试续聊",
           }),
         );
       }
@@ -1303,7 +1312,8 @@ export function ProjectManagerPage() {
                                 <Button
                                   type="button"
                                   variant="ghost"
-                                  size="sm"
+                                  size="icon"
+                                  className="size-7 p-0"
                                   disabled={
                                     !session.sourcePath ||
                                     repairingSessionKeys.has(
@@ -1331,9 +1341,9 @@ export function ProjectManagerPage() {
                                   {repairingSessionKeys.has(
                                     getSessionKey(session),
                                   ) ? (
-                                    <RefreshCw className="size-3.5 animate-spin" />
+                                    <RefreshCw className="size-3 animate-spin" />
                                   ) : (
-                                    <ShieldAlert className="size-3.5" />
+                                    <ShieldAlert className="size-3" />
                                   )}
                                 </Button>
                               )}

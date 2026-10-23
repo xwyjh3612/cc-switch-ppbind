@@ -1,6 +1,7 @@
 pub mod providers;
 pub mod terminal;
 
+use rusqlite::{params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -68,6 +69,7 @@ pub struct CodexEncryptedContentRepairResult {
     pub source_path: String,
     pub removed_items: usize,
     pub backup_path: Option<String>,
+    pub history_backup_paths: Vec<String>,
 }
 
 /// Remove opaque reasoning items that cannot be replayed by a different Codex
@@ -79,12 +81,16 @@ pub fn repair_codex_encrypted_content(
 ) -> Result<CodexEncryptedContentRepairResult, String> {
     let codex_dir = crate::codex_config::get_codex_config_dir();
     let roots = codex::session_roots();
+    let config_text = crate::codex_config::read_codex_config_text().unwrap_or_default();
+    let history_dbs =
+        crate::codex_state_db::codex_thread_history_db_paths(&codex_dir, &config_text);
     repair_codex_encrypted_content_with_roots(
         provider_id,
         session_id,
         source_path,
         &roots,
         &codex_dir.join("session-repairs"),
+        &history_dbs,
     )
 }
 
@@ -94,6 +100,7 @@ fn repair_codex_encrypted_content_with_roots(
     source_path: &str,
     roots: &[PathBuf],
     repair_root: &Path,
+    history_dbs: &[PathBuf],
 ) -> Result<CodexEncryptedContentRepairResult, String> {
     if provider_id != "codex" {
         return Err("Encrypted-content repair is only supported for Codex sessions".to_string());
@@ -125,8 +132,12 @@ fn repair_codex_encrypted_content_with_roots(
         ));
     }
 
-    let original = fs::read(&validated_source)
-        .map_err(|e| format!("Failed to read Codex session {}: {e}", validated_source.display()))?;
+    let original = fs::read(&validated_source).map_err(|e| {
+        format!(
+            "Failed to read Codex session {}: {e}",
+            validated_source.display()
+        )
+    })?;
     let text = String::from_utf8(original.clone())
         .map_err(|e| format!("Codex session is not valid UTF-8: {e}"))?;
     let mut retained = Vec::new();
@@ -135,9 +146,8 @@ fn repair_codex_encrypted_content_with_roots(
 
     for (line_no, line) in text.split_inclusive('\n').enumerate() {
         let json_text = line.trim_end_matches(['\r', '\n']);
-        let value: Value = serde_json::from_str(json_text).map_err(|e| {
-            format!("Invalid JSON in Codex session at line {}: {e}", line_no + 1)
-        })?;
+        let value: Value = serde_json::from_str(json_text)
+            .map_err(|e| format!("Invalid JSON in Codex session at line {}: {e}", line_no + 1))?;
         if value.get("type").and_then(Value::as_str) == Some("session_meta") {
             let file_session_id = value
                 .get("payload")
@@ -151,21 +161,26 @@ fn repair_codex_encrypted_content_with_roots(
             }
             found_session_id = true;
         }
-        let is_encrypted_reasoning = value.get("type").and_then(Value::as_str)
-            == Some("response_item")
+        let is_reasoning_item = value.get("type").and_then(Value::as_str) == Some("response_item")
             && value
                 .get("payload")
                 .and_then(Value::as_object)
-                .map(|payload| {
-                    payload.get("type").and_then(Value::as_str) == Some("reasoning")
-                        && payload
-                            .get("encrypted_content")
-                            .and_then(Value::as_str)
-                            .map(|content| !content.is_empty())
-                            .unwrap_or(false)
+                .map(|payload| payload.get("type").and_then(Value::as_str) == Some("reasoning"))
+                .unwrap_or(false);
+        let is_reasoning_completion = value.get("type").and_then(Value::as_str)
+            == Some("event_msg")
+            && value
+                .get("payload")
+                .and_then(Value::as_object)
+                .and_then(|payload| payload.get("item"))
+                .and_then(Value::as_object)
+                .map(|item| {
+                    item.get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|item_type| item_type.eq_ignore_ascii_case("reasoning"))
                 })
                 .unwrap_or(false);
-        if is_encrypted_reasoning {
+        if is_reasoning_item || is_reasoning_completion {
             removed_items += 1;
             continue;
         }
@@ -180,8 +195,8 @@ fn repair_codex_encrypted_content_with_roots(
         return Err("Codex session metadata is missing".to_string());
     }
 
-    let backup_path = if removed_items > 0 {
-        let session_repair_root = repair_root.join(session_id);
+    let session_repair_root = repair_root.join(session_id);
+    if removed_items > 0 {
         fs::create_dir_all(&session_repair_root).map_err(|e| {
             format!(
                 "Failed to create repair backup directory {}: {e}",
@@ -224,6 +239,7 @@ fn repair_codex_encrypted_content_with_roots(
             ));
         };
         drop(backup_file);
+        prune_repair_backups(&session_repair_root, "session", 3);
         if fs::read(&validated_source)
             .map_err(|e| format!("Failed to recheck Codex session before writing: {e}"))?
             != original
@@ -231,19 +247,198 @@ fn repair_codex_encrypted_content_with_roots(
             return Err("Codex session changed during repair; the backup was kept and the file was not modified".to_string());
         }
         let repaired = retained.concat().into_bytes();
+        let history_backup_paths =
+            clear_codex_history_projection(session_id, history_dbs, &session_repair_root)?;
         crate::config::atomic_write(&validated_source, &repaired)
             .map_err(|e| format!("Failed to write repaired Codex session: {e}"))?;
-        Some(backup.to_string_lossy().into_owned())
-    } else {
-        None
-    };
+        return Ok(CodexEncryptedContentRepairResult {
+            session_id: session_id.to_string(),
+            source_path: validated_source.to_string_lossy().into_owned(),
+            removed_items,
+            backup_path: Some(backup.to_string_lossy().into_owned()),
+            history_backup_paths,
+        });
+    }
+    let history_backup_paths =
+        clear_codex_history_projection(session_id, history_dbs, &session_repair_root)?;
 
     Ok(CodexEncryptedContentRepairResult {
         session_id: session_id.to_string(),
         source_path: validated_source.to_string_lossy().into_owned(),
         removed_items,
-        backup_path,
+        backup_path: None,
+        history_backup_paths,
     })
+}
+
+fn clear_codex_history_projection(
+    session_id: &str,
+    history_dbs: &[PathBuf],
+    repair_root: &Path,
+) -> Result<Vec<String>, String> {
+    let mut backups = Vec::new();
+    for (db_index, db_path) in history_dbs.iter().enumerate() {
+        if !db_path.exists() {
+            continue;
+        }
+        let mut conn = Connection::open(db_path)
+            .map_err(|e| format!("Failed to open Codex history DB {}: {e}", db_path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| format!("Failed to set Codex history DB timeout: {e}"))?;
+
+        let tables = [
+            "thread_items",
+            "thread_turns",
+            "thread_realtime_items",
+            "thread_history_projection_state",
+        ];
+        let mut rows = 0i64;
+        for table in tables {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("Failed to inspect Codex history DB: {e}"))?;
+            if exists {
+                let count: i64 = conn
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE thread_id = ?1"),
+                        [session_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| format!("Failed to inspect Codex history projection: {e}"))?;
+                rows += count;
+            }
+        }
+        if rows == 0 {
+            continue;
+        }
+
+        fs::create_dir_all(repair_root).map_err(|e| {
+            format!(
+                "Failed to create repair backup directory {}: {e}",
+                repair_root.display()
+            )
+        })?;
+        let db_name = db_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("thread_history.sqlite");
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let backup_path = repair_root.join(format!("history-{db_index}-{stamp}-{db_name}"));
+        let mut backup_conn = Connection::open(&backup_path)
+            .map_err(|e| format!("Failed to create Codex history DB backup: {e}"))?;
+        let backup_result = (|| -> Result<(), String> {
+            let tx = backup_conn
+                .transaction()
+                .map_err(|e| format!("Failed to start history backup: {e}"))?;
+            for table in tables {
+                let schema: Option<String> = conn
+                    .query_row(
+                        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                        [table],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| format!("Failed to read history table schema: {e}"))?;
+                let Some(schema) = schema else { continue };
+                tx.execute_batch(&schema)
+                    .map_err(|e| format!("Failed to create history backup table: {e}"))?;
+                let mut select = conn
+                    .prepare(&format!("SELECT * FROM {table} WHERE thread_id = ?1"))
+                    .map_err(|e| format!("Failed to read history rows: {e}"))?;
+                let column_count = select.column_count();
+                let placeholders = (1..=column_count)
+                    .map(|index| format!("?{index}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let insert_sql = format!("INSERT INTO {table} VALUES ({placeholders})");
+                let mut rows = select
+                    .query([session_id])
+                    .map_err(|e| format!("Failed to query history rows: {e}"))?;
+                while let Some(row) = rows
+                    .next()
+                    .map_err(|e| format!("Failed to read history row: {e}"))?
+                {
+                    let values = (0..column_count)
+                        .map(|index| row.get::<_, SqlValue>(index))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .map_err(|e| format!("Failed to copy history row: {e}"))?;
+                    tx.execute(&insert_sql, params_from_iter(values.iter()))
+                        .map_err(|e| format!("Failed to write history backup row: {e}"))?;
+                }
+            }
+            tx.commit()
+                .map_err(|e| format!("Failed to finalize history backup: {e}"))?;
+            Ok(())
+        })();
+        if let Err(error) = backup_result {
+            drop(backup_conn);
+            let _ = fs::remove_file(&backup_path);
+            return Err(error);
+        }
+        drop(backup_conn);
+
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Failed to start Codex history cleanup: {e}"))?;
+        for table in tables {
+            let exists: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("Failed to inspect Codex history DB: {e}"))?;
+            if exists {
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE thread_id = ?1"),
+                    [session_id],
+                )
+                .map_err(|e| format!("Failed to clear Codex history projection: {e}"))?;
+            }
+        }
+        tx.commit()
+            .map_err(|e| format!("Failed to commit Codex history cleanup: {e}"))?;
+        prune_repair_backups(repair_root, "history", 3);
+        backups.push(backup_path.to_string_lossy().into_owned());
+    }
+    Ok(backups)
+}
+
+fn prune_repair_backups(root: &Path, kind: &str, keep: usize) {
+    let mut files = fs::read_dir(root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?.to_string();
+            let matches = if kind == "session" {
+                name.ends_with("-original.jsonl")
+            } else {
+                name.starts_with("history-")
+                    && name.contains("thread_history")
+                    && name.ends_with(".sqlite")
+            };
+            matches.then(|| {
+                let modified = entry.metadata().and_then(|m| m.modified()).ok();
+                (path, modified)
+            })
+        })
+        .collect::<Vec<_>>();
+    files.sort_by_key(|(_, modified)| *modified);
+    while files.len() > keep {
+        if let Some((path, _)) = files.first() {
+            let _ = fs::remove_file(path);
+        }
+        files.remove(0);
+    }
 }
 
 pub fn scan_sessions() -> Vec<SessionMeta> {
@@ -481,14 +676,30 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let sessions = temp.path().join("sessions");
         let repair_root = temp.path().join("repairs");
+        let history_db = temp.path().join("thread_history_1.sqlite");
         std::fs::create_dir_all(&sessions).expect("sessions");
         let path = sessions.join("session.jsonl");
         let original = concat!(
             "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-1\"}}\n",
             "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":\"hello\"}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"reasoning\",\"encrypted_content\":null}}\n",
             "{\"type\":\"response_item\",\"payload\":{\"type\":\"reasoning\",\"encrypted_content\":\"opaque\"}}\n",
         );
         std::fs::write(&path, original).expect("write");
+        let history = rusqlite::Connection::open(&history_db).expect("history db");
+        history
+            .execute_batch(
+                "CREATE TABLE thread_items (thread_id TEXT, item_id TEXT, item_json TEXT);
+                 CREATE TABLE thread_turns (thread_id TEXT, turn_id TEXT);
+                 CREATE TABLE thread_realtime_items (thread_id TEXT, item_id TEXT);
+                 CREATE TABLE thread_history_projection_state (thread_id TEXT);
+                 INSERT INTO thread_items VALUES ('session-1', 'item-1', '{}');
+                 INSERT INTO thread_turns VALUES ('session-1', 'turn-1');
+                 INSERT INTO thread_realtime_items VALUES ('session-1', 'item-2');
+                 INSERT INTO thread_history_projection_state VALUES ('session-1');",
+            )
+            .expect("seed history db");
+        drop(history);
 
         let result = repair_codex_encrypted_content_with_roots(
             "codex",
@@ -496,14 +707,30 @@ mod tests {
             path.to_str().unwrap(),
             &[sessions],
             &repair_root,
+            &[history_db.clone()],
         )
         .expect("repair");
-        assert_eq!(result.removed_items, 1);
+        assert_eq!(result.removed_items, 2);
         let backup_path = result.backup_path.expect("backup");
-        assert_eq!(std::fs::read(backup_path).expect("read backup"), original.as_bytes());
+        assert_eq!(
+            std::fs::read(backup_path).expect("read backup"),
+            original.as_bytes()
+        );
         let repaired = std::fs::read_to_string(&path).expect("read repaired");
         assert!(repaired.contains("\"role\":\"user\""));
         assert!(!repaired.contains("encrypted_content"));
+        assert_eq!(result.history_backup_paths.len(), 1);
+        let history = rusqlite::Connection::open(&history_db).expect("reopen history db");
+        assert_eq!(
+            history
+                .query_row(
+                    "SELECT COUNT(*) FROM thread_items WHERE thread_id = 'session-1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("count history items"),
+            0
+        );
     }
 
     #[test]
@@ -521,6 +748,7 @@ mod tests {
             path.to_str().unwrap(),
             &[temp.path().to_path_buf()],
             &temp.path().join("repairs"),
+            &[],
         )
         .expect_err("mismatch should fail");
         assert!(error.contains("does not match"));
