@@ -130,3 +130,20 @@ pub async fn repair_codex_session_encrypted_content(
     .await
     .map_err(|e| format!("Failed to repair Codex session: {e}"))?
 }
+
+#[tauri::command]
+pub async fn preview_codex_session_encrypted_content_repair(
+    providerId: String,
+    sessionId: String,
+    sourcePath: String,
+) -> Result<session_manager::CodexEncryptedContentRepairPreview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        session_manager::preview_codex_encrypted_content_repair(
+            &providerId,
+            &sessionId,
+            &sourcePath,
+        )
+    })
+    .await
+    .map_err(|e| format!("Failed to inspect Codex session: {e}"))?
+}

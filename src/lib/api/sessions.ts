@@ -16,8 +16,16 @@ export interface CodexEncryptedContentRepairResult {
   sessionId: string;
   sourcePath: string;
   removedItems: number;
+  clearedResponseIds: number;
+  clearedItemIds: number;
   backupPath?: string | null;
   historyBackupPaths?: string[];
+}
+
+export interface CodexEncryptedContentRepairPreview {
+  reasoningItems: number;
+  responseIds: number;
+  itemIds: number;
 }
 
 export const sessionsApi = {
@@ -51,6 +59,16 @@ export const sessionsApi = {
     options: DeleteSessionOptions,
   ): Promise<CodexEncryptedContentRepairResult> {
     return await invoke("repair_codex_session_encrypted_content", {
+      providerId: options.providerId,
+      sessionId: options.sessionId,
+      sourcePath: options.sourcePath,
+    });
+  },
+
+  async previewCodexEncryptedContentRepair(
+    options: DeleteSessionOptions,
+  ): Promise<CodexEncryptedContentRepairPreview> {
+    return await invoke("preview_codex_session_encrypted_content_repair", {
       providerId: options.providerId,
       sessionId: options.sessionId,
       sourcePath: options.sourcePath,

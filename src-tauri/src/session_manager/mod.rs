@@ -68,12 +68,147 @@ pub struct CodexEncryptedContentRepairResult {
     pub session_id: String,
     pub source_path: String,
     pub removed_items: usize,
+    pub cleared_response_ids: usize,
+    pub cleared_item_ids: usize,
     pub backup_path: Option<String>,
     pub history_backup_paths: Vec<String>,
 }
 
-/// Remove opaque reasoning items that cannot be replayed by a different Codex
-/// backend. The original rollout is copied to a repair backup before writing.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexEncryptedContentRepairPreview {
+    pub reasoning_items: usize,
+    pub response_ids: usize,
+    pub item_ids: usize,
+}
+
+pub fn preview_codex_encrypted_content_repair(
+    provider_id: &str,
+    session_id: &str,
+    source_path: &str,
+) -> Result<CodexEncryptedContentRepairPreview, String> {
+    let roots = codex::session_roots();
+    preview_codex_encrypted_content_repair_with_roots(
+        provider_id,
+        session_id,
+        source_path,
+        &roots,
+    )
+}
+
+fn preview_codex_encrypted_content_repair_with_roots(
+    provider_id: &str,
+    session_id: &str,
+    source_path: &str,
+    roots: &[PathBuf],
+) -> Result<CodexEncryptedContentRepairPreview, String> {
+    if provider_id != "codex" {
+        return Err("Encrypted-content repair is only supported for Codex sessions".to_string());
+    }
+    if session_id.trim().is_empty()
+        || !session_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        return Err("Codex session ID is invalid".to_string());
+    }
+    let source = Path::new(source_path);
+    if source.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
+        return Err("Codex session source must be a JSONL file".to_string());
+    }
+    let validated_source = canonicalize_existing_path(source, "session source")?;
+    let inside_root = roots.iter().filter(|root| root.exists()).any(|root| {
+        root.canonicalize()
+            .map(|resolved| validated_source.starts_with(resolved))
+            .unwrap_or(false)
+    });
+    if !inside_root {
+        return Err(format!(
+            "Session source path is outside Codex session roots: {}",
+            source.display()
+        ));
+    }
+    let text = fs::read_to_string(&validated_source).map_err(|e| {
+        format!(
+            "Failed to read Codex session {}: {e}",
+            validated_source.display()
+        )
+    })?;
+    if text.is_empty() {
+        return Err("Codex session is empty".to_string());
+    }
+    let mut preview = CodexEncryptedContentRepairPreview {
+        reasoning_items: 0,
+        response_ids: 0,
+        item_ids: 0,
+    };
+    let mut found_session_id = false;
+    for (line_no, line) in text.split_inclusive('\n').enumerate() {
+        let value: Value = serde_json::from_str(line.trim_end_matches(['\r', '\n']))
+            .map_err(|e| format!("Invalid JSON in Codex session at line {}: {e}", line_no + 1))?;
+        if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+            let file_session_id = value
+                .get("payload")
+                .and_then(|payload| payload.get("id"))
+                .and_then(Value::as_str);
+            if file_session_id != Some(session_id) {
+                return Err(format!(
+                    "Codex session ID does not match the requested ID: {}",
+                    validated_source.display()
+                ));
+            }
+            found_session_id = true;
+        }
+        if is_codex_reasoning_record(&value) || is_codex_reasoning_completion(&value) {
+            preview.reasoning_items += 1;
+        }
+        if value.get("type").and_then(Value::as_str) == Some("token_usage_record")
+            && value
+                .get("payload")
+                .and_then(Value::as_object)
+                .is_some_and(|payload| payload.contains_key("response_id"))
+        {
+            preview.response_ids += 1;
+        }
+        if value.get("type").and_then(Value::as_str) == Some("response_item")
+            && value
+                .get("payload")
+                .and_then(Value::as_object)
+                .is_some_and(|payload| payload.contains_key("id"))
+        {
+            preview.item_ids += 1;
+        }
+    }
+    if !found_session_id {
+        return Err("Codex session metadata is missing".to_string());
+    }
+    Ok(preview)
+}
+
+fn is_codex_reasoning_record(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("response_item")
+        && value
+            .get("payload")
+            .and_then(Value::as_object)
+            .is_some_and(|payload| payload.get("type").and_then(Value::as_str) == Some("reasoning"))
+}
+
+fn is_codex_reasoning_completion(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("event_msg")
+        && value
+            .get("payload")
+            .and_then(Value::as_object)
+            .and_then(|payload| payload.get("item"))
+            .and_then(Value::as_object)
+            .is_some_and(|item| {
+                item.get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|item_type| item_type.eq_ignore_ascii_case("reasoning"))
+            })
+}
+
+/// Remove opaque reasoning items and remote response IDs that cannot be replayed
+/// by a different Codex backend. The original rollout is copied to a repair backup.
 pub fn repair_codex_encrypted_content(
     provider_id: &str,
     session_id: &str,
@@ -140,13 +275,15 @@ fn repair_codex_encrypted_content_with_roots(
     })?;
     let text = String::from_utf8(original.clone())
         .map_err(|e| format!("Codex session is not valid UTF-8: {e}"))?;
-    let mut retained = Vec::new();
+    let mut retained: Vec<String> = Vec::new();
     let mut removed_items = 0usize;
+    let mut cleared_response_ids = 0usize;
+    let mut cleared_item_ids = 0usize;
     let mut found_session_id = false;
 
     for (line_no, line) in text.split_inclusive('\n').enumerate() {
         let json_text = line.trim_end_matches(['\r', '\n']);
-        let value: Value = serde_json::from_str(json_text)
+        let mut value: Value = serde_json::from_str(json_text)
             .map_err(|e| format!("Invalid JSON in Codex session at line {}: {e}", line_no + 1))?;
         if value.get("type").and_then(Value::as_str) == Some("session_meta") {
             let file_session_id = value
@@ -161,30 +298,33 @@ fn repair_codex_encrypted_content_with_roots(
             }
             found_session_id = true;
         }
-        let is_reasoning_item = value.get("type").and_then(Value::as_str) == Some("response_item")
-            && value
-                .get("payload")
-                .and_then(Value::as_object)
-                .map(|payload| payload.get("type").and_then(Value::as_str) == Some("reasoning"))
-                .unwrap_or(false);
-        let is_reasoning_completion = value.get("type").and_then(Value::as_str)
-            == Some("event_msg")
-            && value
-                .get("payload")
-                .and_then(Value::as_object)
-                .and_then(|payload| payload.get("item"))
-                .and_then(Value::as_object)
-                .map(|item| {
-                    item.get("type")
-                        .and_then(Value::as_str)
-                        .is_some_and(|item_type| item_type.eq_ignore_ascii_case("reasoning"))
-                })
-                .unwrap_or(false);
-        if is_reasoning_item || is_reasoning_completion {
+        if is_codex_reasoning_record(&value) || is_codex_reasoning_completion(&value) {
             removed_items += 1;
             continue;
         }
-        retained.push(line);
+        if value.get("type").and_then(Value::as_str) == Some("token_usage_record") {
+            if let Some(payload) = value.get_mut("payload").and_then(Value::as_object_mut) {
+                if payload.remove("response_id").is_some() {
+                    cleared_response_ids += 1;
+                    retained.push(format!("{}\n", serde_json::to_string(&value).map_err(|e| {
+                        format!("Failed to serialize repaired Codex usage record at line {}: {e}", line_no + 1)
+                    })?));
+                    continue;
+                }
+            }
+        }
+        if value.get("type").and_then(Value::as_str) == Some("response_item") {
+            if let Some(payload) = value.get_mut("payload").and_then(Value::as_object_mut) {
+                if payload.remove("id").is_some() {
+                    cleared_item_ids += 1;
+                    retained.push(format!("{}\n", serde_json::to_string(&value).map_err(|e| {
+                        format!("Failed to serialize repaired Codex item at line {}: {e}", line_no + 1)
+                    })?));
+                    continue;
+                }
+            }
+        }
+        retained.push(line.to_string());
     }
     // split_inclusive omits a final empty segment, so preserve an empty file and
     // retain the exact bytes of every non-removed line.
@@ -196,7 +336,7 @@ fn repair_codex_encrypted_content_with_roots(
     }
 
     let session_repair_root = repair_root.join(session_id);
-    if removed_items > 0 {
+    if removed_items > 0 || cleared_response_ids > 0 || cleared_item_ids > 0 {
         fs::create_dir_all(&session_repair_root).map_err(|e| {
             format!(
                 "Failed to create repair backup directory {}: {e}",
@@ -255,6 +395,8 @@ fn repair_codex_encrypted_content_with_roots(
             session_id: session_id.to_string(),
             source_path: validated_source.to_string_lossy().into_owned(),
             removed_items,
+            cleared_response_ids,
+            cleared_item_ids,
             backup_path: Some(backup.to_string_lossy().into_owned()),
             history_backup_paths,
         });
@@ -266,6 +408,8 @@ fn repair_codex_encrypted_content_with_roots(
         session_id: session_id.to_string(),
         source_path: validated_source.to_string_lossy().into_owned(),
         removed_items,
+        cleared_response_ids,
+        cleared_item_ids,
         backup_path: None,
         history_backup_paths,
     })
@@ -684,6 +828,8 @@ mod tests {
             "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":\"hello\"}}\n",
             "{\"type\":\"response_item\",\"payload\":{\"type\":\"reasoning\",\"encrypted_content\":null}}\n",
             "{\"type\":\"response_item\",\"payload\":{\"type\":\"reasoning\",\"encrypted_content\":\"opaque\"}}\n",
+            "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"resp_foreign_resource\",\"usage\":{\"input_tokens\":10}}}\n",
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":\"msg_foreign_resource\",\"role\":\"assistant\",\"content\":\"hello\"}}\n",
         );
         std::fs::write(&path, original).expect("write");
         let history = rusqlite::Connection::open(&history_db).expect("history db");
@@ -701,6 +847,17 @@ mod tests {
             .expect("seed history db");
         drop(history);
 
+        let preview = preview_codex_encrypted_content_repair_with_roots(
+            "codex",
+            "session-1",
+            path.to_str().unwrap(),
+            &[sessions.clone()],
+        )
+        .expect("preview");
+        assert_eq!(preview.reasoning_items, 2);
+        assert_eq!(preview.response_ids, 1);
+        assert_eq!(preview.item_ids, 1);
+
         let result = repair_codex_encrypted_content_with_roots(
             "codex",
             "session-1",
@@ -711,6 +868,8 @@ mod tests {
         )
         .expect("repair");
         assert_eq!(result.removed_items, 2);
+        assert_eq!(result.cleared_response_ids, 1);
+        assert_eq!(result.cleared_item_ids, 1);
         let backup_path = result.backup_path.expect("backup");
         assert_eq!(
             std::fs::read(backup_path).expect("read backup"),
@@ -719,6 +878,9 @@ mod tests {
         let repaired = std::fs::read_to_string(&path).expect("read repaired");
         assert!(repaired.contains("\"role\":\"user\""));
         assert!(!repaired.contains("encrypted_content"));
+        assert!(!repaired.contains("resp_foreign_resource"));
+        assert!(!repaired.contains("msg_foreign_resource"));
+        assert!(repaired.contains("\"input_tokens\":10"));
         assert_eq!(result.history_backup_paths.len(), 1);
         let history = rusqlite::Connection::open(&history_db).expect("reopen history db");
         assert_eq!(

@@ -1754,6 +1754,7 @@ pub fn run() {
             commands::delete_session,
             commands::delete_sessions,
             commands::repair_codex_session_encrypted_content,
+            commands::preview_codex_session_encrypted_content_repair,
             commands::launch_session_terminal,
             commands::get_tool_versions,
             commands::run_tool_lifecycle_action,

@@ -17,6 +17,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { projectsApi, providersApi, sessionsApi } from "@/lib/api";
+import type { CodexEncryptedContentRepairPreview } from "@/lib/api/sessions";
 import type {
   ProjectDto,
   ProjectProviderRoute,
@@ -559,6 +560,12 @@ export function ProjectManagerPage() {
     ProjectDto["sessions"][number] | null
   >(null);
   const [confirmingSessionRepair, setConfirmingSessionRepair] = useState(false);
+  const [repairPreview, setRepairPreview] =
+    useState<CodexEncryptedContentRepairPreview | null>(null);
+  const [loadingRepairPreview, setLoadingRepairPreview] = useState(false);
+  const [repairPreviewError, setRepairPreviewError] = useState<string | null>(
+    null,
+  );
 
   const projects = useQuery({
     queryKey: ["projects"],
@@ -737,12 +744,14 @@ export function ProjectManagerPage() {
         sourcePath: session.sourcePath,
       });
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
-      if (result.removedItems > 0) {
+      if (result.removedItems > 0 || result.clearedResponseIds > 0 || result.clearedItemIds > 0) {
         toast.success(
           t("projectManager.encryptedContentRemoved", {
             defaultValue:
-              "已清理 {{count}} 个推理历史条目，原会话和历史缓存已备份",
+              "已清理 {{count}} 个推理条目、{{responseIds}} 个远端响应引用和 {{itemIds}} 个远端条目 ID，原会话和历史缓存已备份",
             count: result.removedItems,
+            responseIds: result.clearedResponseIds,
+            itemIds: result.clearedItemIds,
           }),
           result.backupPath
             ? {
@@ -757,7 +766,7 @@ export function ProjectManagerPage() {
         toast.info(
           t("projectManager.encryptedContentNotFound", {
             defaultValue:
-              "未找到推理条目，但已清理该会话的历史缓存，请重新尝试续聊",
+              "未找到需清理的远端推理或响应引用，但已清理该会话的历史缓存，请重新尝试续聊",
           }),
         );
       }
@@ -785,6 +794,33 @@ export function ProjectManagerPage() {
       setRepairTargetSession(null);
     } finally {
       setConfirmingSessionRepair(false);
+    }
+  };
+
+  const openSessionEncryptedContentRepair = async (
+    session: ProjectDto["sessions"][number],
+  ) => {
+    if (!session.sourcePath || session.providerId !== "codex") return;
+    setRepairTargetSession(session);
+    setRepairPreview(null);
+    setRepairPreviewError(null);
+    setLoadingRepairPreview(true);
+    try {
+      const preview = await sessionsApi.previewCodexEncryptedContentRepair({
+        providerId: session.providerId,
+        sessionId: session.sessionId,
+        sourcePath: session.sourcePath,
+      });
+      setRepairPreview(preview);
+    } catch (error) {
+      setRepairPreviewError(
+        extractErrorMessage(error) ||
+          t("sessionManager.encryptedContentPreviewFailed", {
+            defaultValue: "读取待清理内容数量失败",
+          }),
+      );
+    } finally {
+      setLoadingRepairPreview(false);
     }
   };
 
@@ -1335,7 +1371,9 @@ export function ProjectManagerPage() {
                                     },
                                   )}
                                   onClick={() =>
-                                    setRepairTargetSession(session)
+                                    void openSessionEncryptedContentRepair(
+                                      session,
+                                    )
                                   }
                                 >
                                   {repairingSessionKeys.has(
@@ -1448,17 +1486,33 @@ export function ProjectManagerPage() {
         title={t("sessionManager.encryptedContentRepairTitle", {
           defaultValue: "移除加密推理内容？",
         })}
-        message={t("sessionManager.encryptedContentRepairConfirm", {
-          defaultValue:
-            "将移除该 Codex 会话中无法跨供应商解密的推理密文，以便尝试继续原会话。对话文本和工具记录会保留；被移除的推理无法恢复。操作前会自动备份完整原文件。",
-        })}
+        message={
+          loadingRepairPreview
+            ? t("sessionManager.encryptedContentPreviewLoading", {
+                defaultValue: "正在统计将清理的内容…",
+              })
+            : repairPreviewError
+              ? repairPreviewError
+              : t("sessionManager.encryptedContentRepairConfirm", {
+                  reasoningItems: repairPreview?.reasoningItems ?? 0,
+                  responseIds: repairPreview?.responseIds ?? 0,
+                  itemIds: repairPreview?.itemIds ?? 0,
+                  defaultValue:
+                    "将删除 {{reasoningItems}} 条加密推理内容（reasoning 条目及事件）、{{responseIds}} 个远端 response_id 和 {{itemIds}} 个 response_item.id。对话文本和工具记录会保留；推理内容删除后无法恢复。操作前会自动备份完整原文件。",
+                })
+        }
         confirmText={t("sessionManager.encryptedContentRepairAction", {
           defaultValue: "备份并移除",
         })}
         pending={confirmingSessionRepair}
+        confirmDisabled={loadingRepairPreview || repairPreview === null}
         onConfirm={() => void confirmSessionEncryptedContentRepair()}
         onCancel={() => {
-          if (!confirmingSessionRepair) setRepairTargetSession(null);
+          if (!confirmingSessionRepair) {
+            setRepairTargetSession(null);
+            setRepairPreview(null);
+            setRepairPreviewError(null);
+          }
         }}
       />
 
