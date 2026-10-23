@@ -9,7 +9,7 @@
 </div>
 
 <p align="center">
-  <a href="https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/PPBind_3.20.5_x64-setup.exe"><strong>下载最新版 Windows x64 安装包</strong></a>
+  <a href="https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/PPBind_3.20.7_x64-setup.exe"><strong>下载最新版 Windows x64 安装包</strong></a>
   ·
   <a href="https://github.com/xwyjh3612/cc-switch-ppbind/releases">查看全部版本</a>
 </p>
@@ -129,6 +129,8 @@ session_id / x-session-id
 - 安装过程只结束 `ppbind.exe`，不会结束官方 `cc-switch.exe`；
 - 便携版点击更新会打开 PPBind Releases 页面。
 
+3.20.7 还增加了 Codex 会话加密推理内容清理预览：执行备份并移除前，会显示将删除的加密内容条数和受影响的信息，便于确认后继续使用原会话。
+
 发布仓库需要保持公开。更新检查优先读取 GitHub Release 页面和 `SHA256SUMS.txt`；页面或校验文件暂时不可用时会自动回退到 GitHub API 和资源摘要，安装包内不会保存任何 Token。
 
 ## 使用流程
@@ -155,13 +157,13 @@ session_id / x-session-id
 
 ### 双击安装
 
-- [直接下载最新版 Windows x64 安装包](https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/PPBind_3.20.5_x64-setup.exe)
+- [直接下载最新版 Windows x64 安装包](https://github.com/xwyjh3612/cc-switch-ppbind/releases/latest/download/PPBind_3.20.7_x64-setup.exe)
 - [查看 GitHub Releases 中的全部版本](https://github.com/xwyjh3612/cc-switch-ppbind/releases)
 
 构建后的 Windows 安装包位于：
 
 ```text
-release/PPBind_3.20.5_x64-setup.exe
+release/PPBind_3.20.7_x64-setup.exe
 ```
 
 双击安装包即可安装，默认安装到 %LOCALAPPDATA%\PPBind。

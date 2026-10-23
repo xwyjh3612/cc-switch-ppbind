@@ -1,7 +1,7 @@
 name: Release
 
-# PPBind signed multi-platform release workflow. It stays manual so a tag push
-# cannot publish before the platform builds and updater manifest are complete.
+# PPBind signed multi-platform release workflow. It remains a manual workflow
+# because signing and notarization credentials are required for these builds.
 on:
   workflow_dispatch:
 
